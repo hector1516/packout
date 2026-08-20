@@ -269,14 +269,9 @@ export function SettingsPanel({
 
           <section className="card">
             <h2>Tablas SQL</h2>
-            <div className="settings-buttons">
-              <button className="btn" onClick={() => setTablesOpen(true)}>
-                Verificar tablas
-              </button>
-              <button className="btn" onClick={() => setSoundsOpen(true)}>
-                Sonidos
-              </button>
-            </div>
+            <button className="btn" onClick={() => setTablesOpen(true)}>
+              Verificar tablas
+            </button>
             <div className="grid">
               <Field
                 label="Resultados"
@@ -493,6 +488,15 @@ export function SettingsPanel({
             MAPICS: {test.mapics.ok ? "OK" : "FAIL"} — {test.mapics.msg}
           </p>
           <button onClick={reload}>Recargar config</button>
+        </section>
+      )}
+
+      {config && (
+        <section className="card">
+          <h2>Sonidos</h2>
+          <button className="btn" onClick={() => setSoundsOpen(true)}>
+            Configurar sonidos
+          </button>
         </section>
       )}
 
