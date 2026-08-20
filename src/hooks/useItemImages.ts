@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { sqlItemImage, type KitItem } from "../lib/packout";
+import { cacheGetFoto, cacheSaveFoto, sqlItemImage, type KitItem } from "../lib/packout";
 
 export interface ItemImage {
   key: string;
@@ -26,8 +26,15 @@ export function useItemImages(items: KitItem[]) {
         let src: string | null = null;
         try {
           src = await sqlItemImage(it.desc);
+          if (src) {
+            cacheSaveFoto(it.desc, src).catch(() => {});
+          }
         } catch {
-          src = null;
+          try {
+            src = await cacheGetFoto(it.desc);
+          } catch {
+            src = null;
+          }
         }
         out.push({ key: it.key, src });
       }

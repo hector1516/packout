@@ -1,64 +1,86 @@
 use crate::config::{AppConfig, SqlDb, Zone};
-use crate::mapics::odbc_err;
-use odbc::{create_environment_v3, DiagnosticRecord, ResultSetState, Statement};
+use futures::StreamExt;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+use tiberius::{Client, Config};
+use tokio::net::TcpStream;
+use tokio::runtime::Runtime;
+use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
-fn odbc_env_err(e: Option<DiagnosticRecord>) -> String {
-    e.map(|d| d.to_string())
-        .unwrap_or_else(|| "Error ODBC (sin detalles)".into())
+fn rt() -> &'static Runtime {
+    static RT: OnceLock<Runtime> = OnceLock::new();
+    RT.get_or_init(|| Runtime::new().expect("crear runtime tokio"))
 }
 
-fn conn_string(db: &SqlDb) -> String {
-    format!(
-        "Driver={{{}}};Server={};Database={};Uid={};Pwd={};MultipleActiveResultSets=False",
-        db.driver, db.server, db.database, db.user, db.password
-    )
+fn config_from(db: &SqlDb) -> Result<Config, String> {
+    let cs = format!(
+        "Server={};Database={};User Id={};Password={}",
+        db.server, db.database, db.user, db.password
+    );
+    let mut config = Config::from_ado_string(&cs)
+        .map_err(|e| format!("Cadena de conexión SQL inválida: {}", e))?;
+    config.encryption(tiberius::EncryptionLevel::Required);
+    config.trust_cert();
+    Ok(config)
+}
+
+async fn connect(db: &SqlDb) -> Result<Client<Compat<TcpStream>>, String> {
+    let config = config_from(db)?;
+    let addr = config.get_addr();
+    let timeout = std::time::Duration::from_secs(10);
+    let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr.as_str()))
+        .await
+        .map_err(|_| format!("Timeout conectando a {} (10s)", db.server))?
+        .map_err(|e| format!("No se pudo conectar a {}: {}", db.server, e))?;
+    let client = tokio::time::timeout(timeout, Client::connect(config, tcp.compat()))
+        .await
+        .map_err(|_| format!("Timeout de autenticación con {} (10s)", db.server))?
+        .map_err(|e| format!("Error de autenticación con {}: {}", db.server, e))?;
+    Ok(client)
 }
 
 fn open(db: &SqlDb, sql: &str) -> Result<Vec<Value>, String> {
-    let env = create_environment_v3().map_err(odbc_env_err)?;
-    let conn = env
-        .connect_with_connection_string(&conn_string(db))
-        .map_err(odbc_err)?;
-    let stmt = Statement::with_parent(&conn).map_err(odbc_err)?;
-    let state = stmt.exec_direct(sql).map_err(odbc_err)?;
-    match state {
-        ResultSetState::NoData(_) => Ok(Vec::new()),
-        ResultSetState::Data(mut stmt) => {
-            let ncols = stmt.num_result_cols().map_err(odbc_err)? as usize;
-            let labels: Vec<String> = (1..=ncols as u16)
-                .map(|i| {
-                    stmt.describe_col(i)
-                        .map(|d| d.name)
-                        .unwrap_or_else(|_| format!("col{}", i))
-                })
-                .collect();
-            let mut rows = Vec::new();
-            while let Some(mut cursor) = stmt.fetch().map_err(odbc_err)? {
-                let mut obj = serde_json::Map::new();
-                for (idx, label) in labels.iter().enumerate() {
-                    let col = (idx + 1) as u16;
-                    let val: String = cursor
-                        .get_data::<String>(col)
-                        .map_err(odbc_err)?
-                        .unwrap_or_default();
-                    obj.insert(label.clone(), json!(val));
-                }
-                rows.push(Value::Object(obj));
+    rt().block_on(async {
+        let mut client = connect(db).await?;
+        let mut stream = client
+            .query(sql, &[])
+            .await
+            .map_err(|e| format!("Error en consulta: {}", e))?;
+        let names: Vec<String> = stream
+            .columns()
+            .await
+            .map_err(|e| format!("Error en columnas: {}", e))?
+            .unwrap_or_default()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        let mut rows = Vec::new();
+        while let Some(item) = stream.next().await {
+            let item = item.map_err(|e| format!("Error leyendo filas: {}", e))?;
+            let row = match item {
+                tiberius::QueryItem::Row(row) => row,
+                _ => continue,
+            };
+            let mut obj = serde_json::Map::new();
+            for (i, name) in names.iter().enumerate() {
+                let val: Option<&str> = row.get(i);
+                obj.insert(name.clone(), json!(val.unwrap_or_default()));
             }
-            Ok(rows)
+            rows.push(Value::Object(obj));
         }
-    }
+        Ok(rows)
+    })
 }
 
 fn exec(db: &SqlDb, sql: &str) -> Result<(), String> {
-    let env = create_environment_v3().map_err(odbc_env_err)?;
-    let conn = env
-        .connect_with_connection_string(&conn_string(db))
-        .map_err(odbc_err)?;
-    let stmt = Statement::with_parent(&conn).map_err(odbc_err)?;
-    stmt.exec_direct(sql).map_err(odbc_err)?;
-    Ok(())
+    rt().block_on(async {
+        let mut client = connect(db).await?;
+        client
+            .execute(sql, &[])
+            .await
+            .map_err(|e| format!("Error ejecutando SQL: {}", e))?;
+        Ok(())
+    })
 }
 
 pub fn test_connection(cfg: &AppConfig, zone: Option<&Zone>) -> Result<String, String> {
@@ -99,6 +121,20 @@ pub fn insert_resultado(
         esc(comentario),
     );
     exec(db, &sql)
+}
+
+pub fn consultar_serie_aprobada(
+    cfg: &AppConfig,
+    zone: &Zone,
+    serie: &str,
+) -> Result<Vec<Value>, String> {
+    let db = cfg.sql_for(Some(zone));
+    let sql = format!(
+        "SELECT TOP 1 * FROM {} WHERE Serie = '{}' AND Resultado = 'APROBADO' ORDER BY FechaHora DESC",
+        zone.tables.resultados,
+        esc(serie)
+    );
+    open(db, &sql)
 }
 
 pub fn insert_error(
@@ -207,6 +243,229 @@ pub fn listar_items_con_imagen(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value
     let db = cfg.sql_for(Some(zone));
     let sql = format!("SELECT Item FROM {} ORDER BY Item", zone.tables.item_images);
     open(db, &sql)
+}
+
+pub fn expected_columns(zone: &Zone) -> Vec<(String, Vec<(String, String)>, bool, String)> {
+    vec![
+        (
+            zone.tables.resultados.clone(),
+            vec![
+                ("FechaHora".into(), "VARCHAR(30)".into()),
+                ("Pedido".into(), "VARCHAR(50)".into()),
+                ("Serie".into(), "VARCHAR(50)".into()),
+                ("Resultado".into(), "VARCHAR(30)".into()),
+                ("Operador".into(), "VARCHAR(30)".into()),
+                ("OperadorAdmin".into(), "VARCHAR(30)".into()),
+                ("Comentario".into(), "VARCHAR(500)".into()),
+            ],
+            false,
+            String::new(),
+        ),
+        (
+            zone.tables.errores.clone(),
+            vec![
+                ("FechaHora".into(), "VARCHAR(30)".into()),
+                ("Titulo".into(), "VARCHAR(200)".into()),
+                ("Desc".into(), "VARCHAR(1000)".into()),
+            ],
+            false,
+            String::new(),
+        ),
+        (
+            zone.tables.usuarios.clone(),
+            vec![
+                ("No".into(), "VARCHAR(30)".into()),
+                ("Nombre".into(), "VARCHAR(100)".into()),
+            ],
+            false,
+            String::new(),
+        ),
+        (
+            zone.tables.admin.clone(),
+            vec![
+                ("No".into(), "VARCHAR(30)".into()),
+                ("Nombre".into(), "VARCHAR(100)".into()),
+            ],
+            false,
+            String::new(),
+        ),
+        (
+            zone.tables.item_images.clone(),
+            vec![
+                ("Item".into(), "VARCHAR(50)".into()),
+                ("Imagen".into(), "NVARCHAR(MAX)".into()),
+                ("FechaHora".into(), "VARCHAR(30)".into()),
+            ],
+            false,
+            String::new(),
+        ),
+        (
+            zone.tables.recientes.clone(),
+            vec![
+                ("FechaHora".into(), "VARCHAR(30)".into()),
+                ("Pedido".into(), "VARCHAR(50)".into()),
+                ("Serie".into(), "VARCHAR(50)".into()),
+                ("Resultado".into(), "VARCHAR(30)".into()),
+                ("Operador".into(), "VARCHAR(30)".into()),
+                ("OperadorAdmin".into(), "VARCHAR(30)".into()),
+                ("Comentario".into(), "VARCHAR(500)".into()),
+            ],
+            true,
+            format!(
+                "CREATE OR ALTER VIEW {} AS SELECT FechaHora, Pedido, Serie, Resultado, Operador, OperadorAdmin, Comentario FROM {}",
+                zone.tables.recientes, zone.tables.resultados
+            ),
+        ),
+    ]
+}
+
+pub fn table_exists(db: &SqlDb, table: &str) -> Result<bool, String> {
+    let rows = open(
+        db,
+        &format!(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{}'",
+            esc(table)
+        ),
+    )?;
+    Ok(!rows.is_empty())
+}
+
+pub fn view_exists(db: &SqlDb, view: &str) -> Result<bool, String> {
+    let rows = open(
+        db,
+        &format!(
+            "SELECT 1 FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_NAME = '{}'",
+            esc(view)
+        ),
+    )?;
+    Ok(!rows.is_empty())
+}
+
+pub fn list_table_columns(db: &SqlDb, table: &str) -> Result<Vec<String>, String> {
+    let rows = open(
+        db,
+        &format!(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{}'",
+            esc(table)
+        ),
+    )?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.get("COLUMN_NAME").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .collect())
+}
+
+pub fn create_table(db: &SqlDb, table: &str, columns: &[(String, String)]) -> Result<(), String> {
+    let cols: Vec<String> = columns
+        .iter()
+        .map(|(name, ty)| format!("[{}] {}", name, ty))
+        .collect();
+    let sql = format!(
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{}') CREATE TABLE {} ({})",
+        esc(table),
+        table,
+        cols.join(", ")
+    );
+    exec(db, &sql)
+}
+
+pub fn create_view(db: &SqlDb, source: &str) -> Result<(), String> {
+    exec(db, source)
+}
+
+pub fn add_missing_columns(
+    db: &SqlDb,
+    table: &str,
+    columns: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    let existing = list_table_columns(db, table)?;
+    let mut added = Vec::new();
+    for (name, ty) in columns {
+        if !existing.iter().any(|c| c.eq_ignore_ascii_case(name)) {
+            let sql = format!("ALTER TABLE {} ADD [{}] {}", table, esc(name), ty);
+            exec(db, &sql)?;
+            added.push(name.clone());
+        }
+    }
+    Ok(added)
+}
+
+pub fn verificar_tablas(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>, String> {
+    let db = cfg.sql_for(Some(zone));
+    let mut out = Vec::new();
+    for (table, cols, is_view, _src) in expected_columns(zone) {
+        let exists = if is_view {
+            view_exists(db, &table)?
+        } else {
+            table_exists(db, &table)?
+        };
+        let existing = if exists { list_table_columns(db, &table)? } else { Vec::new() };
+        let missing: Vec<String> = cols
+            .iter()
+            .filter(|(name, _)| !existing.iter().any(|c| c.eq_ignore_ascii_case(name)))
+            .map(|(name, _)| name.clone())
+            .collect();
+        out.push(json!({
+            "table": table,
+            "exists": exists,
+            "isView": is_view,
+            "columns": existing,
+            "missing": missing,
+            "ok": exists && missing.is_empty(),
+        }));
+    }
+    Ok(out)
+}
+
+pub fn crear_tablas_faltantes(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>, String> {
+    let db = cfg.sql_for(Some(zone));
+    let mut out = Vec::new();
+    for (table, cols, is_view, src) in expected_columns(zone) {
+        let exists = if is_view {
+            view_exists(db, &table)?
+        } else {
+            table_exists(db, &table)?
+        };
+        if !exists {
+            if is_view {
+                create_view(db, &src)?;
+            } else {
+                create_table(db, &table, &cols)?;
+            }
+        } else if is_view {
+            let existing = list_table_columns(db, &table)?;
+            let missing: Vec<String> = cols
+                .iter()
+                .filter(|(name, _)| !existing.iter().any(|c| c.eq_ignore_ascii_case(name)))
+                .map(|(name, _)| name.clone())
+                .collect();
+            if !missing.is_empty() {
+                create_view(db, &src)?;
+            }
+        } else {
+            add_missing_columns(db, &table, &cols)?;
+        }
+        let existing = if is_view {
+            if exists { list_table_columns(db, &table)? } else { Vec::new() }
+        } else {
+            list_table_columns(db, &table)?
+        };
+        let missing: Vec<String> = cols
+            .iter()
+            .filter(|(name, _)| !existing.iter().any(|c| c.eq_ignore_ascii_case(name)))
+            .map(|(name, _)| name.clone())
+            .collect();
+        out.push(json!({
+            "table": table,
+            "exists": true,
+            "isView": is_view,
+            "columns": existing,
+            "missing": missing,
+            "ok": missing.is_empty(),
+        }));
+    }
+    Ok(out)
 }
 
 fn esc(s: &str) -> String {

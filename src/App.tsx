@@ -28,7 +28,7 @@ function App() {
       {page === "main" ? (
         <MainScreen onOpenSettings={() => setPage("settings")} />
       ) : (
-        <SettingsPanel onBack={() => setPage("main")} />
+        <SettingsPanel onBack={() => setPage("main")} updater={updater} />
       )}
       {!splash && updater.state.phase === "available" && (
         <div className="update-banner">
@@ -63,14 +63,6 @@ function App() {
             Reintentar
           </button>
         </div>
-      )}
-      {!splash && updater.state.phase === "idle" && (
-        <button
-          className="update-check"
-          onClick={() => updater.check({ manual: true })}
-        >
-          Buscar actualizaciones
-        </button>
       )}
     </div>
   );

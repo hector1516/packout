@@ -1,20 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   buildItems,
+  cacheGetKit,
+  cacheIsProcesada,
+  cacheMarkProcesada,
+  cacheRemoveOp,
+  cacheSaveKit,
+  cacheUpsertOp,
   looksLikeSerial,
   mapicsInsertKit,
+  mapicsPrecache,
   normalizeScan,
   reimprimir,
   sqlCheckOperator,
+  sqlCheckSerieAprobada,
   sqlHistorial,
   sqlInsertError,
   sqlInsertResultado,
   sqlLogin,
   sqlRecientes,
+  type CachedItem,
   type KitItem,
   type KitRow,
+  type PendingOp,
 } from "../lib/packout";
 import { mapicsQueryKit } from "../lib/packout";
+import { useConfig } from "./useConfig";
 
 export type FlowStatus = "idle" | "kit" | "approved" | "done";
 
@@ -50,6 +61,8 @@ function blank(): FlowState {
 
 export function usePackoutFlow() {
   const [state, setState] = useState<FlowState>(blank);
+  const { config } = useConfig();
+  const mapicsOkRef = useRef(false);
 
   const refreshHistorial = useCallback(async () => {
     try {
@@ -81,6 +94,22 @@ export function usePackoutFlow() {
   const loadKit = useCallback(
     async (serie: string) => {
       setState((s) => ({ ...s, serie, resultado: "PENDIENTE", message: "Consultando MAPICS..." }));
+      let already = false;
+      try {
+        const check = await sqlCheckSerieAprobada(serie);
+        already = check.found;
+      } catch {
+        try {
+          already = await cacheIsProcesada(serie);
+        } catch {
+          already = false;
+        }
+      }
+      if (already) {
+        setState((s) => ({ ...s, serie: "N/A", message: `La serie ${serie} ya fue aprobada` }));
+        return;
+      }
+
       try {
         const res = await mapicsQueryKit(serie);
         if (res.count === 0) {
@@ -99,29 +128,80 @@ export function usePackoutFlow() {
           message: `Kit cargado: ${items.length} items`,
           error: "",
         }));
-      } catch (e) {
-        logError(`Error en mapics_query_kit: ${e}`);
-        setState((s) => ({ ...s, message: "Error al consultar MAPICS" }));
+        const cached: CachedItem[] = items.map((it) => ({
+          key: it.key,
+          desc: it.desc,
+          scanned: it.scanned,
+        }));
+        cacheSaveKit(serie, pedido, cached, null).catch(() => {});
+        const bufferKits = config?.bufferKits ?? 30;
+        mapicsPrecache(serie, bufferKits).catch(() => {});
+      } catch (onlineErr) {
+        try {
+          const cached = await cacheGetKit(serie);
+          if (!cached.found || cached.items.length === 0) {
+            setState((s) => ({
+              ...s,
+              serie: "N/A",
+              message: `No disponible offline: ${serie}`,
+            }));
+            return;
+          }
+          const items: KitItem[] = cached.items.map((c) => ({
+            key: c.key,
+            desc: c.desc,
+            label: c.key,
+            scanned: c.scanned,
+          }));
+          setState((s) => ({
+            ...s,
+            status: "kit",
+            pedido: cached.pedido,
+            items,
+            remaining: items.filter((i) => !i.scanned).length,
+            resultado: "PENDIENTE",
+            message: `Kit cargado offline: ${items.length} items`,
+            error: "",
+          }));
+        } catch {
+          logError(`Error en mapics_query_kit: ${onlineErr}`);
+          setState((s) => ({ ...s, message: "Error al consultar MAPICS" }));
+        }
       }
     },
-    [logError],
+    [config?.bufferKits, logError],
   );
 
   const approve = useCallback(async () => {
+    const now = new Date().toLocaleString("es-MX");
+    mapicsOkRef.current = false;
     try {
       await mapicsInsertKit(state.serie);
-      setState((s) => ({
-        ...s,
-        status: "approved",
-        resultado: "APROBADO",
-        message: "APROBADO — escanea tu gafete para registrar",
-        error: "",
-      }));
+      mapicsOkRef.current = true;
     } catch (e) {
-      logError(`Error en mapics_insert_kit: ${e}`);
-      setState((s) => ({ ...s, message: "Error al insertar en MAPICS" }));
+      const op: PendingOp = {
+        tipo: "aprobado",
+        serie: state.serie,
+        pedido: state.pedido,
+        resultado: "APROBADO",
+        operador: "",
+        operadorAdmin: state.operatorAdmin,
+        comentario: "",
+        fecha: now,
+        mapicsOk: false,
+        sqlOk: false,
+      };
+      cacheUpsertOp(op).catch(() => {});
     }
-  }, [state.serie, logError]);
+    cacheMarkProcesada(state.serie).catch(() => {});
+    setState((s) => ({
+      ...s,
+      status: "approved",
+      resultado: "APROBADO",
+      message: "APROBADO — escanea tu gafete para registrar",
+      error: "",
+    }));
+  }, [state.serie, state.pedido, state.operatorAdmin]);
 
   const scanItem = useCallback(
     (key: string) => {
@@ -167,26 +247,50 @@ export function usePackoutFlow() {
           break;
         }
         case "approved": {
+          const now = new Date().toLocaleString("es-MX");
+          let op:
+            | { found: boolean; operador: string }
+            | undefined;
           try {
             const res = await sqlCheckOperator(code);
-            if (res.found) {
-              await sqlInsertResultado({
-                pedido: state.pedido,
-                serie: state.serie,
-                resultado: "APROBADO",
-                operador: code,
-                operadorAdmin: state.operatorAdmin,
-                comentario: "",
-              });
-              setState((s) => ({ ...s, operatorNo: code, status: "done", message: "Registrado. Listo para el siguiente." }));
-              refreshHistorial();
-              setTimeout(() => setState(blank()), 2500);
-            } else {
-              setMessage(`Operador no registrado: ${code}`);
-            }
-          } catch (e) {
-            logError(`Error al registrar aprobado: ${e}`);
+            op = { found: res.found, operador: code };
+          } catch {
+            op = { found: true, operador: code };
           }
+          if (op && !op.found) {
+            setMessage(`Colaborador no registrado: ${code}`);
+            break;
+          }
+          const operador = code;
+          try {
+            await sqlInsertResultado({
+              pedido: state.pedido,
+              serie: state.serie,
+              resultado: "APROBADO",
+              operador,
+              operadorAdmin: state.operatorAdmin,
+              comentario: "",
+            });
+            cacheRemoveOp(state.serie).catch(() => {});
+          } catch {
+            const mapicsOk = mapicsOkRef.current;
+            const pending: PendingOp = {
+              tipo: "aprobado",
+              serie: state.serie,
+              pedido: state.pedido,
+              resultado: "APROBADO",
+              operador,
+              operadorAdmin: state.operatorAdmin,
+              comentario: "",
+              fecha: now,
+              mapicsOk,
+              sqlOk: false,
+            };
+            cacheUpsertOp(pending).catch(() => {});
+          }
+          setState((s) => ({ ...s, operatorNo: operador, status: "done", message: "Registrado. Listo para el siguiente." }));
+          refreshHistorial();
+          setTimeout(() => setState(blank()), 2500);
           break;
         }
         default:
@@ -200,6 +304,7 @@ export function usePackoutFlow() {
     async (admin: string, comentario: string) => {
       if (!state.serie) return;
       const faltantes = state.items.filter((i) => !i.scanned).map((i) => i.key);
+      const now = new Date().toLocaleString("es-MX");
       try {
         await sqlInsertResultado({
           pedido: state.pedido,
@@ -209,12 +314,24 @@ export function usePackoutFlow() {
           operadorAdmin: admin,
           comentario: `${comentario} items: ${faltantes.join(", ")}`,
         });
-        setState((s) => ({ ...s, status: "done", message: "Pendiente registrado" }));
-        refreshHistorial();
-        setTimeout(() => setState(blank()), 2500);
-      } catch (e) {
-        logError(`Error al registrar pendiente: ${e}`);
+      } catch {
+        const pending: PendingOp = {
+          tipo: "pendiente",
+          serie: state.serie,
+          pedido: state.pedido,
+          resultado: "PENDIENTE",
+          operador: "",
+          operadorAdmin: admin,
+          comentario: `${comentario} items: ${faltantes.join(", ")}`,
+          fecha: now,
+          mapicsOk: true,
+          sqlOk: false,
+        };
+        cacheUpsertOp(pending).catch(() => {});
       }
+      setState((s) => ({ ...s, status: "done", message: "Pendiente registrado" }));
+      refreshHistorial();
+      setTimeout(() => setState(blank()), 2500);
     },
     [state, refreshHistorial, logError],
   );
@@ -226,6 +343,7 @@ export function usePackoutFlow() {
         setMessage(`Serial inválido: ${serie}`);
         return;
       }
+      const now = new Date().toLocaleString("es-MX");
       try {
         await sqlInsertResultado({
           pedido: "",
@@ -235,8 +353,20 @@ export function usePackoutFlow() {
           operadorAdmin,
           comentario: `Manual: ${serie}`,
         });
-      } catch (e) {
-        logError(`Error registrando manual: ${e}`);
+      } catch {
+        const pending: PendingOp = {
+          tipo: "manual",
+          serie,
+          pedido: "",
+          resultado: "MANUAL",
+          operador: "N/A",
+          operadorAdmin,
+          comentario: `Manual: ${serie}`,
+          fecha: now,
+          mapicsOk: true,
+          sqlOk: false,
+        };
+        cacheUpsertOp(pending).catch(() => {});
       }
       setState((s) => ({ ...s, serie, status: "idle" as FlowStatus }));
       await loadKit(serie);
@@ -285,6 +415,14 @@ export function usePackoutFlow() {
     },
     [logError],
   );
+
+  useEffect(() => {
+    if (!state.operatorAdmin) return;
+    const t = setTimeout(() => {
+      setState((s) => ({ ...s, operatorAdmin: "" }));
+    }, 10 * 60 * 1000);
+    return () => clearTimeout(t);
+  }, [state.operatorAdmin]);
 
   const reset = useCallback(() => {
     setState((s) => ({ ...s, ...blank(), operatorAdmin: s.operatorAdmin }));

@@ -1,9 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  sqlCheckTables,
+  sqlCreateTables,
   sqlDeleteItemImage,
   sqlListItemImages,
   sqlSaveItemImage,
   type KitRow,
+  type PendingOp,
+  type TableCheck,
 } from "../lib/packout";
 export function Modal({
   title,
@@ -285,6 +289,197 @@ export function ImagesModal({
           ))}
           {itemsWithImg.length === 0 && <li className="muted">sin imágenes guardadas</li>}
         </ul>
+      </div>
+    </Modal>
+  );
+}
+
+export function BufferModal({
+  onClose,
+  onSync,
+  sqlOnline,
+  mapicsOnline,
+  cola,
+  kits,
+  procesadas,
+  syncing,
+}: {
+  onClose: () => void;
+  onSync: () => void;
+  sqlOnline: boolean;
+  mapicsOnline: boolean;
+  cola: PendingOp[];
+  kits: { serie: string; pedido: string; items: number; image: boolean }[];
+  procesadas: string[];
+  syncing: boolean;
+}) {
+  const both = sqlOnline && mapicsOnline;
+
+  return (
+    <Modal title="Buffer de sincronización" onClose={onClose}>
+      <div className="buffer">
+        <div className="buffer-status">
+          <span className={sqlOnline ? "dot ok" : "dot bad"}>●</span> SQL:{" "}
+          {sqlOnline ? "EN LÍNEA" : "SIN CONEXIÓN"}
+          <span className={mapicsOnline ? "dot ok" : "dot bad"}>●</span> MAPICS:{" "}
+          {mapicsOnline ? "EN LÍNEA" : "SIN CONEXIÓN"}
+        </div>
+        {!both && (
+          <p className="error-text">
+            La sincronización requiere que SQL y MAPICS estén en línea al mismo tiempo.
+          </p>
+        )}
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Serie</th>
+              <th>MAPICS</th>
+              <th>SQL</th>
+              <th>Fecha</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cola.map((op) => (
+              <tr key={op.serie}>
+                <td>{op.serie}</td>
+                <td>{op.mapicsOk ? "✓ enviado" : "pendiente"}</td>
+                <td>{op.sqlOk ? "✓ enviado" : "pendiente"}</td>
+                <td>{op.fecha}</td>
+              </tr>
+            ))}
+            {cola.length === 0 && (
+              <tr>
+                <td colSpan={4} className="muted">
+                  sin pendientes — buffer vacío
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <div className="buffer-meta">
+          <span className="chip">Kits en buffer: {kits.length}</span>
+          <span className="chip">Procesadas: {procesadas.length}</span>
+          <span className="chip">Pendientes: {cola.length}</span>
+        </div>
+        <div className="modal-actions">
+          <button className="btn primary" onClick={onSync} disabled={!both || syncing}>
+            {syncing ? "Sincronizando..." : "Sincronizar ahora"}
+          </button>
+          <button className="btn" onClick={onClose}>
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+export function TablesModal({
+  onClose,
+}: {
+  onClose: () => void;
+}) {
+  const [tables, setTables] = useState<TableCheck[]>([]);
+  const [checking, setChecking] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const check = async () => {
+    setChecking(true);
+    setMsg("");
+    try {
+      const res = await sqlCheckTables();
+      setTables(res.tables);
+      const bad = res.tables.filter((t) => !t.ok);
+      if (bad.length === 0) setMsg("Todas las tablas están correctas");
+      else setMsg(`${bad.length} tabla(s) con problemas`);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const create = async () => {
+    setChecking(true);
+    setMsg("");
+    try {
+      const res = await sqlCreateTables();
+      setTables(res.tables);
+      const bad = res.tables.filter((t) => !t.ok);
+      if (bad.length === 0) setMsg("Tablas creadas/verificadas correctamente");
+      else setMsg(`${bad.length} tabla(s) siguen con problemas`);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    check();
+  }, []);
+
+  return (
+    <Modal title="Verificar tablas SQL" onClose={onClose}>
+      <div className="tables-check">
+        <p className="muted">
+          Escanea la base de datos para verificar que existan las tablas con sus campos
+          correctos. Si falta una tabla o campo, se creará.
+        </p>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Tabla</th>
+              <th>Estado</th>
+              <th>Faltantes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tables.map((t) => (
+              <tr key={t.table}>
+                <td>
+                  {t.isView ? "vista " : ""}
+                  {t.table}
+                </td>
+                <td>
+                  {t.exists ? (
+                    <span className={t.ok ? "ok" : "error-text"}>
+                      {t.ok ? "✓ correcta" : "existe, faltan campos"}
+                    </span>
+                  ) : (
+                    <span className="error-text">no existe</span>
+                  )}
+                </td>
+                <td>
+                  {t.missing.length > 0 ? (
+                    <span className="error-text">{t.missing.join(", ")}</span>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+              </tr>
+            ))}
+            {tables.length === 0 && (
+              <tr>
+                <td colSpan={3} className="muted">
+                  {checking ? "Verificando..." : "Sin resultados"}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {msg && <p className={msg.includes("problemas") ? "error-text" : "ok"}>{msg}</p>}
+        <div className="modal-actions">
+          <button className="btn primary" onClick={create} disabled={checking}>
+            {checking ? "Procesando..." : "Crear / reparar tablas"}
+          </button>
+          <button className="btn" onClick={check} disabled={checking}>
+            Re-verificar
+          </button>
+          <button className="btn" onClick={onClose}>
+            Cerrar
+          </button>
+        </div>
       </div>
     </Modal>
   );
