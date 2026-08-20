@@ -22,7 +22,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/com.packout.app/sounds/*"]
+        "scope": ["$APPDATA/sounds/*"]
       }
     }
   },
