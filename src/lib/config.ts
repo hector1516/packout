@@ -37,11 +37,18 @@ export interface Zone {
   sql?: SqlDb;
 }
 
+export interface SoundConfig {
+  enabled: boolean;
+  complete: string;
+  error: string;
+}
+
 export interface AppConfig {
   activeZone: string;
   sql: SqlDb;
   zones: Zone[];
   bufferKits?: number;
+  sound?: SoundConfig;
 }
 
 export interface TestResult {
@@ -72,4 +79,8 @@ export async function setActiveZone(zoneId: string): Promise<AppConfig> {
 
 export async function testZone(): Promise<TestResult> {
   return invoke<TestResult>("test_zone");
+}
+
+export async function saveSoundFile(kind: "complete" | "error", sourcePath: string): Promise<string> {
+  return invoke<string>("save_sound_file", { kind, sourcePath });
 }

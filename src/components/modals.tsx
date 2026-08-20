@@ -1,4 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import {
   sqlCheckTables,
   sqlCreateTables,
@@ -9,6 +11,7 @@ import {
   type PendingOp,
   type TableCheck,
 } from "../lib/packout";
+import { saveSoundFile } from "../lib/config";
 export function Modal({
   title,
   onClose,
@@ -478,6 +481,129 @@ export function TablesModal({
           </button>
           <button className="btn" onClick={onClose}>
             Cerrar
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+export function SoundModal({
+  onClose,
+  initial,
+  onSave,
+}: {
+  onClose: () => void;
+  initial: { enabled: boolean; complete: string; error: string };
+  onSave: (sound: { enabled: boolean; complete: string; error: string }) => void | Promise<void>;
+}) {
+  const [enabled, setEnabled] = useState(initial.enabled);
+  const [complete, setComplete] = useState(initial.complete);
+  const [error, setError] = useState(initial.error);
+  const [busy, setBusy] = useState<"complete" | "error" | null>(null);
+  const [msg, setMsg] = useState("");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const play = (path: string) => {
+    if (!path) {
+      setMsg("No hay sonido asignado");
+      return;
+    }
+    try {
+      const src = convertFileSrc(path);
+      if (audioRef.current) {
+        audioRef.current.src = src;
+        audioRef.current.play().catch(() => setMsg("No se pudo reproducir"));
+      }
+    } catch {
+      setMsg("No se pudo reproducir");
+    }
+  };
+
+  const pick = async (kind: "complete" | "error") => {
+    setBusy(kind);
+    setMsg("");
+    try {
+      const file = await dialogOpen({
+        title: kind === "complete" ? "Sonido de kit completo" : "Sonido de error",
+        filters: [{ name: "Audio MP3", extensions: ["mp3"] }],
+      });
+      if (typeof file === "string") {
+        const saved = await saveSoundFile(kind, file);
+        if (kind === "complete") setComplete(saved);
+        else setError(saved);
+        setMsg("Sonido cargado");
+      }
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const save = async () => {
+    try {
+      await onSave({ enabled, complete, error });
+      setMsg("Configuración de sonido guardada");
+      onClose();
+    } catch (e) {
+      setMsg(String(e));
+    }
+  };
+
+  return (
+    <Modal title="Sonidos de la aplicación" onClose={onClose}>
+      <div className="sound-modal">
+        <audio ref={audioRef} />
+        <label className="sound-toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.currentTarget.checked)}
+          />
+          <span>Activar sonidos en la app</span>
+        </label>
+        <div className="sound-row">
+          <div className="sound-info">
+            <strong>Kit completo</strong>
+            <span className="muted">
+              Se reproduce al completar un kit
+              {complete ? ` · ${complete.split("\\").pop()?.split("/").pop()}` : " · sin asignar"}
+            </span>
+          </div>
+          <div className="sound-actions">
+            <button className="btn subtle" disabled={busy !== null} onClick={() => pick("complete")}>
+              {busy === "complete" ? "Cargando..." : "Subir MP3"}
+            </button>
+            <button className="btn subtle" onClick={() => play(complete)}>
+              ▶ Probar
+            </button>
+          </div>
+        </div>
+        <div className="sound-row">
+          <div className="sound-info">
+            <strong>Error</strong>
+            <span className="muted">
+              Se reproduce cuando algo falla
+              {error ? ` · ${error.split("\\").pop()?.split("/").pop()}` : " · sin asignar"}
+            </span>
+          </div>
+          <div className="sound-actions">
+            <button className="btn subtle" disabled={busy !== null} onClick={() => pick("error")}>
+              {busy === "error" ? "Cargando..." : "Subir MP3"}
+            </button>
+            <button className="btn subtle" onClick={() => play(error)}>
+              ▶ Probar
+            </button>
+          </div>
+        </div>
+        {msg && <p className="muted">{msg}</p>}
+        <div className="modal-actions">
+          <button className="btn primary" onClick={save}>
+            Guardar
+          </button>
+          <button className="btn" onClick={onClose}>
+            Cancelar
           </button>
         </div>
       </div>

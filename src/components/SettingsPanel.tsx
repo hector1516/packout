@@ -5,13 +5,14 @@ import {
   testZone,
   exportConfig,
   importConfig,
+  saveConfig,
   type AppConfig,
   type TestResult,
   type Zone,
 } from "../lib/config";
 import { useConfig } from "../hooks/useConfig";
 import type { useUpdater } from "../hooks/useUpdater";
-import { TablesModal } from "./modals";
+import { SoundModal, TablesModal } from "./modals";
 
 function Field({
   label,
@@ -59,6 +60,7 @@ export function SettingsPanel({
   const [test, setTest] = useState<TestResult | null>(null);
   const [saving, setSaving] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
+  const [soundsOpen, setSoundsOpen] = useState(false);
 
   if (loading) return <div className="center">Cargando configuración...</div>;
   if (!config) return <div className="center">Error: {error}</div>;
@@ -267,9 +269,14 @@ export function SettingsPanel({
 
           <section className="card">
             <h2>Tablas SQL</h2>
-            <button className="btn" onClick={() => setTablesOpen(true)}>
-              Verificar tablas
-            </button>
+            <div className="settings-buttons">
+              <button className="btn" onClick={() => setTablesOpen(true)}>
+                Verificar tablas
+              </button>
+              <button className="btn" onClick={() => setSoundsOpen(true)}>
+                Sonidos
+              </button>
+            </div>
             <div className="grid">
               <Field
                 label="Resultados"
@@ -490,6 +497,22 @@ export function SettingsPanel({
       )}
 
       {tablesOpen && <TablesModal onClose={() => setTablesOpen(false)} />}
+
+      {soundsOpen && config && (
+        <SoundModal
+          initial={{
+            enabled: config.sound?.enabled ?? true,
+            complete: config.sound?.complete ?? "",
+            error: config.sound?.error ?? "",
+          }}
+          onClose={() => setSoundsOpen(false)}
+          onSave={async (sound) => {
+            const next = { ...config, sound };
+            setConfig(next);
+            await saveConfig(next);
+          }}
+        />
+      )}
     </div>
   );
 }

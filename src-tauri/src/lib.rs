@@ -33,6 +33,28 @@ fn get_config(state: tauri::State<AppState>) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
+fn save_sound_file(
+    state: tauri::State<AppState>,
+    kind: String,
+    source_path: String,
+) -> Result<String, String> {
+    let kind = if kind == "error" { "error" } else { "complete" };
+    let mut cfg = load_config(&state)?;
+    let sounds_dir = state.app_data_dir.join("sounds");
+    std::fs::create_dir_all(&sounds_dir).map_err(|e| e.to_string())?;
+    let target = sounds_dir.join(format!("{}.mp3", kind));
+    std::fs::copy(&source_path, &target).map_err(|e| format!("No se pudo copiar el archivo: {}", e))?;
+    let path = target.to_string_lossy().to_string();
+    if kind == "error" {
+        cfg.sound.error = path.clone();
+    } else {
+        cfg.sound.complete = path.clone();
+    }
+    config::save(&state.app_data_dir, &cfg)?;
+    Ok(path)
+}
+
+#[tauri::command]
 fn save_config(
     state: tauri::State<AppState>,
     config: AppConfig,
@@ -583,6 +605,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            save_sound_file,
             export_config,
             import_config,
             set_active_zone,
