@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { usePackoutFlow, type FlowStatus } from "../hooks/usePackoutFlow";
 import { useConfig } from "../hooks/useConfig";
 import { useItemImages } from "../hooks/useItemImages";
-import { OperatorModal, PendingModal, ReprintModal, ImagesModal } from "./modals";
+import { useConnectivity } from "../hooks/useConnectivity";
+import { OperatorModal, PendingModal, ReprintModal, ImagesModal, BufferModal } from "./modals";
+import { Celebration } from "./Celebration";
 
-type ModalKind = "none" | "login" | "manual" | "reprint" | "pending" | "images";
+type ModalKind = "none" | "login" | "manual" | "reprint" | "pending" | "images" | "buffer";
 
 const GENERIC_IMAGE =
   "data:image/svg+xml;utf8," +
@@ -21,9 +23,37 @@ export function MainScreen({
     usePackoutFlow();
   const { config } = useConfig();
   const { images, loading: imagesLoading, reload: reloadImages } = useItemImages(state.items);
+  const conn = useConnectivity();
   const [modal, setModal] = useState<ModalKind>("none");
+  const [zoom, setZoom] = useState<{ src: string; key: string } | null>(null);
   const [scan, setScan] = useState("");
   const scanRef = useRef<HTMLInputElement>(null);
+
+  const connOffline = !conn.sqlOnline || !conn.mapicsOnline;
+  const pendingVisible = conn.pendingCount > 0;
+  const [celebrate, setCelebrate] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === "K" || e.key === "k")) {
+        e.preventDefault();
+        setCelebrate(true);
+        setTimeout(() => setCelebrate(false), 5200);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const prevStatusRef = useRef(state.status);
+  useEffect(() => {
+    if (state.status === "approved" && prevStatusRef.current !== "approved") {
+      setCelebrate(true);
+      const t = setTimeout(() => setCelebrate(false), 5200);
+      return () => clearTimeout(t);
+    }
+    prevStatusRef.current = state.status;
+  }, [state.status]);
 
   useEffect(() => {
     const focus = () => scanRef.current?.focus();
@@ -45,7 +75,7 @@ export function MainScreen({
   const statusLabel: Record<FlowStatus, string> = {
     idle: "Escanea un serial",
     kit: "Escanea los items del kit",
-    approved: "Escanea tu gafete de operador",
+    approved: "Escanea tu gafete de colaborador",
     done: "Registrado",
   };
 
@@ -64,6 +94,14 @@ export function MainScreen({
         <div className="topbar-actions">
           {state.operatorAdmin && (
             <span className="chip">Admin: {state.operatorAdmin}</span>
+          )}
+          {pendingVisible && (
+            <button
+              className={`btn buffer-btn${connOffline ? " offline" : ""}`}
+              onClick={() => setModal("buffer")}
+            >
+              ⧉ Buffer ({conn.pendingCount})
+            </button>
           )}
           <button className="btn" onClick={() => setModal("login")}>
             Ingreso
@@ -117,7 +155,16 @@ export function MainScreen({
             <span className="muted">
               Serie: {state.serie} · Pedido: {state.pedido}
             </span>
-            {!idle && <span className="chip big-chip">{state.remaining} restantes</span>}
+            {!idle && (
+              <div
+                className={`kit-counter${state.remaining === 0 ? " zero" : ""}`}
+              >
+                <span className="kit-counter-num">
+                  {Math.min(state.remaining, 99)}
+                </span>
+                <span className="kit-counter-label">restantes</span>
+              </div>
+            )}
           </div>
 
           {idle ? (
@@ -137,6 +184,7 @@ export function MainScreen({
                   <div
                     key={img.key}
                     className={`photo-card${scanned ? " scanned" : ""}`}
+                    onClick={() => setZoom({ src: img.src ?? GENERIC_IMAGE, key: img.key })}
                   >
                     <div className="photo-card-img">
                       {img.src ? (
@@ -171,7 +219,7 @@ export function MainScreen({
             <tr>
               <th>Serie</th>
               <th>Resultado</th>
-              <th>Operador</th>
+              <th>Colaborador</th>
             </tr>
           </thead>
           <tbody>
@@ -195,9 +243,34 @@ export function MainScreen({
         </aside>
       </div>
 
+      {connOffline ? (
+        <div className="conn-banner offline">
+          <strong>SIN CONEXIÓN</strong>
+          <span className="conn-detail">
+            SQL: {conn.sqlOnline ? "EN LÍNEA" : "OFFLINE"} · MAPICS:{" "}
+            {conn.mapicsOnline ? "EN LÍNEA" : "OFFLINE"}
+            {conn.pendingCount > 0 && ` · ${conn.pendingCount} pendientes`}
+          </span>
+          {conn.pendingCount > 0 && (
+            <button className="btn subtle" onClick={() => setModal("buffer")}>
+              Ver buffer
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="conn-banner online">
+          <span>● SQL: EN LÍNEA · MAPICS: EN LÍNEA</span>
+          {conn.pendingCount > 0 && (
+            <button className="btn subtle" onClick={() => setModal("buffer")}>
+              {conn.pendingCount} pendientes — ver buffer
+            </button>
+          )}
+        </div>
+      )}
+
       {modal === "login" && (
         <OperatorModal
-          title="Ingreso de operador/admin"
+          title="Ingreso de colaborador/admin"
           inputLabel="Gafete"
           onOk={async (no) => {
             const ok = await loginAdmin(no);
@@ -242,6 +315,42 @@ export function MainScreen({
           onClose={() => setModal("none")}
         />
       )}
+
+      {modal === "buffer" && conn.snapshot && (
+        <BufferModal
+          onClose={() => setModal("none")}
+          onSync={async () => {
+            setModal("none");
+            await conn.syncNow();
+          }}
+          sqlOnline={conn.sqlOnline}
+          mapicsOnline={conn.mapicsOnline}
+          cola={conn.snapshot.cola}
+          kits={conn.snapshot.kits}
+          procesadas={conn.snapshot.procesadas}
+          syncing={conn.checking}
+        />
+      )}
+
+      {zoom && (
+        <div className="zoom-overlay" onClick={() => setZoom(null)}>
+          <button
+            className="zoom-close"
+            onClick={(e) => {
+              e.stopPropagation();
+              setZoom(null);
+            }}
+          >
+            ✕
+          </button>
+          <div className="zoom-body" onClick={(e) => e.stopPropagation()}>
+            <img src={zoom.src} alt={zoom.key} />
+          </div>
+          <div className="zoom-label">{zoom.key}</div>
+        </div>
+      )}
+
+      <Celebration serie={state.serie} visible={celebrate} />
     </div>
   );
 }

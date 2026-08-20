@@ -25,6 +25,7 @@ export interface MapicsZone {
   queryKit: string;
   queryInsert: string;
   queryDelete: string;
+  queryBuffer: string;
 }
 
 export interface Zone {
@@ -40,6 +41,7 @@ export interface AppConfig {
   activeZone: string;
   sql: SqlDb;
   zones: Zone[];
+  bufferKits?: number;
 }
 
 export interface TestResult {

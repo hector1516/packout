@@ -55,6 +55,12 @@ pub struct MapicsZone {
     pub query_kit: String,
     pub query_insert: String,
     pub query_delete: String,
+    #[serde(default = "default_query_buffer")]
+    pub query_buffer: String,
+}
+
+fn default_query_buffer() -> String {
+    "SELECT DISTINCT IMANUSE FROM XACHGMEP.EPCIMAGE WHERE IMANUES IN (SELECT NUESTA FROM XACHGMEP.EPC002PF WHERE LINEPR = 7) AND IMANUSE > '{SERIE}' AND IMAESKI <> 'Disabled' ORDER BY IMANUSE FETCH FIRST {LIMIT} ROWS ONLY".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +81,12 @@ pub struct AppConfig {
     pub active_zone: String,
     pub sql: SqlDb,
     pub zones: Vec<Zone>,
+    #[serde(default = "default_buffer_kits")]
+    pub buffer_kits: u32,
+}
+
+fn default_buffer_kits() -> u32 {
+    30
 }
 
 impl AppConfig {
@@ -89,6 +101,7 @@ impl AppConfig {
 
 pub const DEFAULT_CONFIG: &str = r#"{
   "activeZone": "imx",
+  "bufferKits": 30,
   "sql": {
     "server": "10.96.16.114",
     "database": "hussmann_insight",
@@ -116,7 +129,8 @@ pub const DEFAULT_CONFIG: &str = r#"{
         "password": "CAMBIAME",
         "queryKit": "SELECT A.IMANUES, A.IMANULI, A.IMAORDE, A.IMANUSE, A.IMAKIT, A.IMACONF, A.IMADATE, ifnull(B.EPCTIPO,'') as EPCTIPO, ifnull(B.EPCFECHA,0) as EPCFECHA, ifnull(B.EPCHORA,0) as EPCHORA, ifnull(B.EPCNIMPR,'') as EPCNIMPR, A.IMADATE as FechaRegEPC, A.IMAESKI FROM XACHGMEP.EPCIMAGE A left outer JOIN XACHGMEP.EPCBITA B ON A.IMANUSE = B.EPCSERIE AND A.IMAKIT = B.EPCKIT AND A.IMANUES = B.EPCESTAC AND A.IMANULI = B.EPCLINEA WHERE A.IMANUES IN (SELECT NUESTA FROM XACHGMEP.EPC002PF WHERE LINEPR = 7) AND A.IMAESKI <> 'Disabled' AND A.IMANUSE = '{SERIE}' ORDER BY A.IMADATE DESC",
         "queryInsert": "INSERT INTO XACHGMEP.FESRLKIT SELECT Distinct C.INSLIN, C.INSPED, C.INSNEQ, C.INSITE, C.INSMOO, C.INSSER, C.INSSCU, 'PACKOUT COMPLETE', '{ESTACION}', CURRENT DATE, CURRENT TIME, 'ECCSA' FROM XACHGMEP.EPCIMAGE A INNER JOIN XACHGMEP.EPCBITA B on A.IMANUSE = B.EPCSERIE AND A.IMAKIT = B.EPCKIT INNER JOIN XACHGMEP.BAN100PF C ON A.IMANUSE = C.INSSER WHERE A.IMANUSE = '{SERIE}' AND A.IMANUES IN (SELECT NUESTA FROM XACHGMEP.EPC002PF WHERE LINEPR='7')",
-        "queryDelete": "DELETE FROM XACHGMEP.FESRLKIT WHERE KPSRLN = '{SERIE}'"
+        "queryDelete": "DELETE FROM XACHGMEP.FESRLKIT WHERE KPSRLN = '{SERIE}'",
+        "queryBuffer": "SELECT DISTINCT IMANUSE FROM XACHGMEP.EPCIMAGE WHERE IMANUES IN (SELECT NUESTA FROM XACHGMEP.EPC002PF WHERE LINEPR = 7) AND IMANUSE > '{SERIE}' AND IMAESKI <> 'Disabled' ORDER BY IMANUSE FETCH FIRST {LIMIT} ROWS ONLY"
       }
     }
   ]

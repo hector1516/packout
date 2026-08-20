@@ -10,6 +10,8 @@ import {
   type Zone,
 } from "../lib/config";
 import { useConfig } from "../hooks/useConfig";
+import type { useUpdater } from "../hooks/useUpdater";
+import { TablesModal } from "./modals";
 
 function Field({
   label,
@@ -45,11 +47,18 @@ function Field({
   );
 }
 
-export function SettingsPanel({ onBack }: { onBack?: () => void }) {
+export function SettingsPanel({
+  onBack,
+  updater,
+}: {
+  onBack?: () => void;
+  updater?: ReturnType<typeof useUpdater>;
+}) {
   const { config, set: setConfig, save, reload, loading, error } = useConfig();
   const [status, setStatus] = useState<string>("");
   const [test, setTest] = useState<TestResult | null>(null);
   const [saving, setSaving] = useState(false);
+  const [tablesOpen, setTablesOpen] = useState(false);
 
   if (loading) return <div className="center">Cargando configuración...</div>;
   if (!config) return <div className="center">Error: {error}</div>;
@@ -84,6 +93,7 @@ export function SettingsPanel({ onBack }: { onBack?: () => void }) {
         queryKit: "",
         queryInsert: "",
         queryDelete: "",
+        queryBuffer: "",
       },
     };
     patch((cfg) => ({ ...cfg, zones: [...cfg.zones, base] }));
@@ -257,6 +267,9 @@ export function SettingsPanel({ onBack }: { onBack?: () => void }) {
 
           <section className="card">
             <h2>Tablas SQL</h2>
+            <button className="btn" onClick={() => setTablesOpen(true)}>
+              Verificar tablas
+            </button>
             <div className="grid">
               <Field
                 label="Resultados"
@@ -362,6 +375,15 @@ export function SettingsPanel({ onBack }: { onBack?: () => void }) {
                 patchZone(zone.id, (z) => ({ ...z, mapics: { ...z.mapics, queryDelete: v } }))
               }
             />
+            <Field
+              label="Query Buffer (usa {SERIE}, {LIMIT})"
+              value={zone.mapics.queryBuffer}
+              mono
+              rows={3}
+              onChange={(v) =>
+                patchZone(zone.id, (z) => ({ ...z, mapics: { ...z.mapics, queryBuffer: v } }))
+              }
+            />
           </section>
 
           <section className="card">
@@ -402,9 +424,56 @@ export function SettingsPanel({ onBack }: { onBack?: () => void }) {
                   patch((cfg) => ({ ...cfg, sql: { ...cfg.sql, driver: v } }))
                 }
               />
+              <Field
+                label="Buffer de kits (series a futuro a precargar)"
+                value={String(config.bufferKits ?? 30)}
+                onChange={(v) =>
+                  patch((cfg) => ({ ...cfg, bufferKits: parseInt(v) || 0 }))
+                }
+              />
             </div>
           </section>
         </>
+      )}
+
+      {updater && (
+        <section className="card">
+          <h2>Actualizaciones</h2>
+          {updater.state.phase === "checking" && <p className="muted">Buscando actualizaciones...</p>}
+          {updater.state.phase === "idle" && (
+            <p className="ok">Estás en la versión más reciente</p>
+          )}
+          {updater.state.phase === "available" && (
+            <>
+              <p className="ok">
+                Nueva versión <strong>{updater.state.update.version}</strong> disponible (tienes{" "}
+                {updater.state.update.current_version})
+              </p>
+              <div className="modal-actions">
+                <button className="btn primary" onClick={updater.install}>
+                  Descargar e instalar
+                </button>
+              </div>
+            </>
+          )}
+          {updater.state.phase === "downloading" && (
+            <p className="muted">
+              Descargando... {(updater.state as { percent: number }).percent}%
+            </p>
+          )}
+          {updater.state.phase === "installing" && <p className="muted">Instalando...</p>}
+          {updater.state.phase === "done" && <p className="ok">Actualización instalada</p>}
+          {updater.state.phase === "error" && (
+            <>
+              <p className="error">Error: {updater.state.message}</p>
+            </>
+          )}
+          <div className="modal-actions">
+            <button onClick={() => updater.check({ manual: true })} disabled={updater.state.phase === "checking"}>
+              Buscar actualizaciones
+            </button>
+          </div>
+        </section>
       )}
 
       {test && (
@@ -419,6 +488,8 @@ export function SettingsPanel({ onBack }: { onBack?: () => void }) {
           <button onClick={reload}>Recargar config</button>
         </section>
       )}
+
+      {tablesOpen && <TablesModal onClose={() => setTablesOpen(false)} />}
     </div>
   );
 }

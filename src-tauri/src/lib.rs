@@ -1,3 +1,4 @@
+mod cache;
 mod config;
 mod mapics;
 mod sql;
@@ -10,6 +11,16 @@ use tauri::Manager;
 
 struct AppState {
     app_data_dir: std::path::PathBuf,
+}
+
+async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("Tarea en segundo plano falló: {}", e))?
 }
 
 fn load_config(state: &AppState) -> Result<AppConfig, String> {
@@ -63,15 +74,24 @@ fn set_active_zone(
 }
 
 #[tauri::command]
-fn test_zone(state: tauri::State<AppState>) -> Result<serde_json::Value, String> {
+async fn test_zone(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
     let zone = cfg
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
 
-    let sql_result = sql::test_connection(&cfg, Some(&zone));
-    let mapics_result = mapics::test_connection(&zone);
+    let (sql_result, mapics_result) = tokio::join!(
+        run_blocking({
+            let cfg = cfg.clone();
+            let zone = zone.clone();
+            move || sql::test_connection(&cfg, Some(&zone))
+        }),
+        run_blocking({
+            let zone = zone.clone();
+            move || mapics::test_connection(&zone)
+        }),
+    );
 
     Ok(json!({
         "zone": zone.id,
@@ -81,8 +101,8 @@ fn test_zone(state: tauri::State<AppState>) -> Result<serde_json::Value, String>
 }
 
 #[tauri::command]
-fn mapics_query_kit(
-    state: tauri::State<AppState>,
+async fn mapics_query_kit(
+    state: tauri::State<'_, AppState>,
     serie: String,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -90,13 +110,13 @@ fn mapics_query_kit(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    let rows = mapics::query_kit(&zone, &serie)?;
+    let rows = run_blocking(move || mapics::query_kit(&zone, &serie)).await?;
     Ok(json!({ "rows": rows, "count": rows.len() }))
 }
 
 #[tauri::command]
-fn mapics_insert_kit(
-    state: tauri::State<AppState>,
+async fn mapics_insert_kit(
+    state: tauri::State<'_, AppState>,
     serie: String,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -104,13 +124,13 @@ fn mapics_insert_kit(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    let affected = mapics::insert_kit(&zone, &serie)?;
+    let affected = run_blocking(move || mapics::insert_kit(&zone, &serie)).await?;
     Ok(json!({ "affected": affected }))
 }
 
 #[tauri::command]
-fn mapics_delete_kit(
-    state: tauri::State<AppState>,
+async fn mapics_delete_kit(
+    state: tauri::State<'_, AppState>,
     serie: String,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -118,13 +138,13 @@ fn mapics_delete_kit(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    let affected = mapics::delete_kit(&zone, &serie)?;
+    let affected = run_blocking(move || mapics::delete_kit(&zone, &serie)).await?;
     Ok(json!({ "affected": affected }))
 }
 
 #[tauri::command]
-fn sql_historial(
-    state: tauri::State<AppState>,
+async fn sql_historial(
+    state: tauri::State<'_, AppState>,
     top: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -133,13 +153,13 @@ fn sql_historial(
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
     let top = top.unwrap_or(10);
-    let rows = sql::consultar_historial(&cfg, &zone, top)?;
+    let rows = run_blocking(move || sql::consultar_historial(&cfg, &zone, top)).await?;
     Ok(json!({ "rows": rows, "count": rows.len() }))
 }
 
 #[tauri::command]
-fn sql_item_image(
-    state: tauri::State<AppState>,
+async fn sql_item_image(
+    state: tauri::State<'_, AppState>,
     item: String,
 ) -> Result<Option<String>, String> {
     let cfg = load_config(&state)?;
@@ -147,12 +167,12 @@ fn sql_item_image(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    sql::obtener_imagen_item(&cfg, &zone, &item)
+    run_blocking(move || sql::obtener_imagen_item(&cfg, &zone, &item)).await
 }
 
 #[tauri::command]
-fn sql_save_item_image(
-    state: tauri::State<AppState>,
+async fn sql_save_item_image(
+    state: tauri::State<'_, AppState>,
     item: String,
     imagen: String,
 ) -> Result<(), String> {
@@ -161,12 +181,12 @@ fn sql_save_item_image(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    sql::guardar_imagen_item(&cfg, &zone, &item, &imagen)
+    run_blocking(move || sql::guardar_imagen_item(&cfg, &zone, &item, &imagen)).await
 }
 
 #[tauri::command]
-fn sql_delete_item_image(
-    state: tauri::State<AppState>,
+async fn sql_delete_item_image(
+    state: tauri::State<'_, AppState>,
     item: String,
 ) -> Result<(), String> {
     let cfg = load_config(&state)?;
@@ -174,17 +194,19 @@ fn sql_delete_item_image(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    sql::eliminar_imagen_item(&cfg, &zone, &item)
+    run_blocking(move || sql::eliminar_imagen_item(&cfg, &zone, &item)).await
 }
 
 #[tauri::command]
-fn sql_list_item_images(state: tauri::State<AppState>) -> Result<serde_json::Value, String> {
+async fn sql_list_item_images(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
     let zone = cfg
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    let rows = sql::listar_items_con_imagen(&cfg, &zone)?;
+    let rows = run_blocking(move || sql::listar_items_con_imagen(&cfg, &zone)).await?;
     Ok(json!({ "rows": rows, "count": rows.len() }))
 }
 
@@ -202,8 +224,8 @@ fn write_local_log(app_data_dir: &std::path::Path, msg: &str) {
 }
 
 #[tauri::command]
-fn sql_insert_error(
-    state: tauri::State<AppState>,
+async fn sql_insert_error(
+    state: tauri::State<'_, AppState>,
     titulo: String,
     desc: String,
 ) -> Result<(), String> {
@@ -213,18 +235,13 @@ fn sql_insert_error(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    sql::insert_error(
-        &cfg,
-        &zone,
-        &chrono::Local::now().format("%Y/%m/%d %H:%M:%S").to_string(),
-        &titulo,
-        &desc,
-    )
+    let fecha = chrono::Local::now().format("%Y/%m/%d %H:%M:%S").to_string();
+    run_blocking(move || sql::insert_error(&cfg, &zone, &fecha, &titulo, &desc)).await
 }
 
 #[tauri::command]
-fn sql_recientes(
-    state: tauri::State<AppState>,
+async fn sql_recientes(
+    state: tauri::State<'_, AppState>,
     top: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -233,13 +250,13 @@ fn sql_recientes(
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
     let top = top.unwrap_or(20);
-    let rows = sql::consultar_recientes(&cfg, &zone, top)?;
+    let rows = run_blocking(move || sql::consultar_recientes(&cfg, &zone, top)).await?;
     Ok(json!({ "rows": rows, "count": rows.len() }))
 }
 
 #[tauri::command]
-fn sql_login(
-    state: tauri::State<AppState>,
+async fn sql_login(
+    state: tauri::State<'_, AppState>,
     no: String,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -247,13 +264,13 @@ fn sql_login(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    let rows = sql::consultar_admin(&cfg, &zone, &no)?;
+    let rows = run_blocking(move || sql::consultar_admin(&cfg, &zone, &no)).await?;
     Ok(json!({ "rows": rows, "found": !rows.is_empty() }))
 }
 
 #[tauri::command]
-fn sql_check_operator(
-    state: tauri::State<AppState>,
+async fn sql_check_operator(
+    state: tauri::State<'_, AppState>,
     no: String,
 ) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -261,13 +278,196 @@ fn sql_check_operator(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    let rows = sql::consultar_operador(&cfg, &zone, &no)?;
+    let rows = run_blocking(move || sql::consultar_operador(&cfg, &zone, &no)).await?;
     Ok(json!({ "rows": rows, "found": !rows.is_empty() }))
 }
 
 #[tauri::command]
-fn sql_insert_resultado(
-    state: tauri::State<AppState>,
+async fn sql_check_serie_aprobada(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let rows = run_blocking(move || sql::consultar_serie_aprobada(&cfg, &zone, &serie)).await?;
+    Ok(json!({ "rows": rows, "found": !rows.is_empty() }))
+}
+
+#[tauri::command]
+async fn mapics_precache(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let n = limit.unwrap_or(cfg.buffer_kits);
+    let dir = state.app_data_dir.clone();
+    let added =
+        run_blocking(move || cache::precache(&dir, &zone, &serie, n)).await?;
+    Ok(json!({ "added": added }))
+}
+
+#[tauri::command]
+fn cache_snapshot(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cache = cache::load(&state.app_data_dir);
+    Ok(json!({
+        "kits": cache.kits.iter().map(|k| json!({
+            "serie": k.serie,
+            "pedido": k.pedido,
+            "items": k.items.len(),
+            "image": k.image.is_some(),
+        })).collect::<Vec<_>>(),
+        "cola": cache.cola,
+        "procesadas": cache.procesadas,
+    }))
+}
+
+#[tauri::command]
+fn cache_get_kit(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+) -> Result<serde_json::Value, String> {
+    let kit = cache::get_kit(&state.app_data_dir, &serie);
+    match kit {
+        Some(k) => Ok(json!({
+            "found": true,
+            "serie": k.serie,
+            "pedido": k.pedido,
+            "items": k.items,
+            "image": k.image,
+        })),
+        None => Ok(json!({ "found": false })),
+    }
+}
+
+#[tauri::command]
+fn cache_save_kit(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+    pedido: String,
+    items: Vec<cache::CachedItem>,
+    image: Option<String>,
+) -> Result<(), String> {
+    cache::set_kit(
+        &state.app_data_dir,
+        cache::CachedKit {
+            serie,
+            pedido,
+            items,
+            image,
+        },
+    )
+}
+
+#[tauri::command]
+fn cache_get_foto(
+    state: tauri::State<'_, AppState>,
+    item: String,
+) -> Result<Option<String>, String> {
+    Ok(cache::get_foto(&state.app_data_dir, &item))
+}
+
+#[tauri::command]
+fn cache_save_foto(
+    state: tauri::State<'_, AppState>,
+    item: String,
+    src: String,
+) -> Result<(), String> {
+    cache::set_foto(&state.app_data_dir, &item, &src)
+}
+
+#[tauri::command]
+fn cache_upsert_op(
+    state: tauri::State<'_, AppState>,
+    op: cache::PendingOp,
+) -> Result<(), String> {
+    cache::upsert_op(&state.app_data_dir, op)
+}
+
+#[tauri::command]
+fn cache_set_op_flags(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+    mapics_ok: Option<bool>,
+    sql_ok: Option<bool>,
+) -> Result<(), String> {
+    cache::set_op_flags(&state.app_data_dir, &serie, mapics_ok, sql_ok)
+}
+
+#[tauri::command]
+fn cache_remove_op(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+) -> Result<(), String> {
+    cache::remove_op(&state.app_data_dir, &serie)
+}
+
+#[tauri::command]
+fn cache_mark_procesada(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+) -> Result<(), String> {
+    cache::mark_procesada(&state.app_data_dir, &serie)
+}
+
+#[tauri::command]
+fn cache_is_procesada(
+    state: tauri::State<'_, AppState>,
+    serie: String,
+) -> Result<bool, String> {
+    Ok(cache::is_procesada(&state.app_data_dir, &serie))
+}
+
+#[tauri::command]
+async fn sync_buffer(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let dir = state.app_data_dir.clone();
+    let (sent, series) = run_blocking(move || cache::sync_buffer(&dir, &cfg, &zone)).await?;
+    Ok(json!({ "sent": sent, "series": series }))
+}
+
+#[tauri::command]
+async fn sql_check_tables(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let rows = run_blocking(move || sql::verificar_tablas(&cfg, &zone)).await?;
+    Ok(json!({ "tables": rows }))
+}
+
+#[tauri::command]
+async fn sql_create_tables(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let rows = run_blocking(move || sql::crear_tablas_faltantes(&cfg, &zone)).await?;
+    Ok(json!({ "tables": rows }))
+}
+
+#[tauri::command]
+async fn sql_insert_resultado(
+    state: tauri::State<'_, AppState>,
     pedido: String,
     serie: String,
     resultado: String,
@@ -280,22 +480,26 @@ fn sql_insert_resultado(
         .active()
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
-    sql::insert_resultado(
-        &cfg,
-        &zone,
-        &chrono::Local::now().format("%Y/%m/%d %H:%M:%S").to_string(),
-        &pedido,
-        &serie,
-        &resultado,
-        &operador,
-        &operador_admin,
-        &comentario,
-    )
+    let fecha = chrono::Local::now().format("%Y/%m/%d %H:%M:%S").to_string();
+    run_blocking(move || {
+        sql::insert_resultado(
+            &cfg,
+            &zone,
+            &fecha,
+            &pedido,
+            &serie,
+            &resultado,
+            &operador,
+            &operador_admin,
+            &comentario,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-fn reimprimir(
-    state: tauri::State<AppState>,
+async fn reimprimir(
+    state: tauri::State<'_, AppState>,
     serie: String,
     operador_admin: String,
 ) -> Result<String, String> {
@@ -305,27 +509,53 @@ fn reimprimir(
         .ok_or_else(|| "No hay zona activa configurada".to_string())?
         .clone();
 
-    let del = mapics::delete_kit(&zone, &serie)?;
-    let ins = mapics::insert_kit(&zone, &serie)?;
     let fecha = chrono::Local::now().format("%Y/%m/%d %H:%M:%S").to_string();
-    sql::insert_resultado(
-        &cfg,
-        &zone,
-        &fecha,
-        "",
-        &serie,
-        "REIMPRESO",
-        "N/A",
-        &operador_admin,
-        &format!("Serie reimpresa: {}", serie),
-    )?;
-    sql::insert_error(
-        &cfg,
-        &zone,
-        &fecha,
-        "Reimpresión",
-        &format!("Numero de serie reimpreso: {}", serie),
-    )?;
+    let del = {
+        let zone = zone.clone();
+        let s2 = serie.clone();
+        run_blocking(move || mapics::delete_kit(&zone, &s2)).await?
+    };
+    let ins = {
+        let zone = zone.clone();
+        let s2 = serie.clone();
+        run_blocking(move || mapics::insert_kit(&zone, &s2)).await?
+    };
+    let resultado_serie = serie.clone();
+    let resultado_fecha = fecha.clone();
+    run_blocking({
+        let cfg = cfg.clone();
+        let zone = zone.clone();
+        move || {
+            sql::insert_resultado(
+                &cfg,
+                &zone,
+                &resultado_fecha,
+                "",
+                &resultado_serie,
+                "REIMPRESO",
+                "N/A",
+                &operador_admin,
+                &format!("Serie reimpresa: {}", resultado_serie),
+            )
+        }
+    })
+    .await?;
+    let error_serie = serie.clone();
+    let error_fecha = fecha.clone();
+    run_blocking({
+        let cfg = cfg.clone();
+        let zone = zone.clone();
+        move || {
+            sql::insert_error(
+                &cfg,
+                &zone,
+                &error_fecha,
+                "Reimpresión",
+                &format!("Numero de serie reimpreso: {}", error_serie),
+            )
+        }
+    })
+    .await?;
     Ok(json!({ "deleted": del, "inserted": ins }).to_string())
 }
 
@@ -366,6 +596,21 @@ pub fn run() {
             sql_insert_error,
             sql_login,
             sql_check_operator,
+            sql_check_serie_aprobada,
+            sql_check_tables,
+            sql_create_tables,
+            mapics_precache,
+            cache_snapshot,
+            cache_get_kit,
+            cache_save_kit,
+            cache_get_foto,
+            cache_save_foto,
+            cache_upsert_op,
+            cache_set_op_flags,
+            cache_remove_op,
+            cache_mark_procesada,
+            cache_is_procesada,
+            sync_buffer,
             reimprimir,
             sql_item_image,
             sql_save_item_image,

@@ -85,6 +85,116 @@ export async function sqlCheckOperator(no: string): Promise<LookupResult> {
   return invoke<LookupResult>("sql_check_operator", { no });
 }
 
+export async function sqlCheckSerieAprobada(serie: string): Promise<LookupResult> {
+  return invoke<LookupResult>("sql_check_serie_aprobada", { serie });
+}
+
+export interface CachedItem {
+  key: string;
+  desc: string;
+  scanned: boolean;
+}
+
+export interface CachedKit {
+  serie: string;
+  pedido: string;
+  items: CachedItem[];
+  image?: string | null;
+}
+
+export interface PendingOp {
+  tipo: string;
+  serie: string;
+  pedido: string;
+  resultado: string;
+  operador: string;
+  operadorAdmin: string;
+  comentario: string;
+  fecha: string;
+  mapicsOk: boolean;
+  sqlOk: boolean;
+}
+
+export interface CacheSnapshot {
+  kits: { serie: string; pedido: string; items: number; image: boolean }[];
+  cola: PendingOp[];
+  procesadas: string[];
+}
+
+export async function mapicsPrecache(serie: string, limit?: number): Promise<{ added: string[] }> {
+  return invoke("mapics_precache", { serie, limit });
+}
+
+export async function cacheSnapshot(): Promise<CacheSnapshot> {
+  return invoke<CacheSnapshot>("cache_snapshot");
+}
+
+export async function cacheGetKit(serie: string): Promise<CachedKit & { found: boolean }> {
+  return invoke("cache_get_kit", { serie });
+}
+
+export async function cacheSaveKit(
+  serie: string,
+  pedido: string,
+  items: CachedItem[],
+  image?: string | null,
+): Promise<void> {
+  return invoke("cache_save_kit", { serie, pedido, items, image });
+}
+
+export async function cacheGetFoto(item: string): Promise<string | null> {
+  return invoke<string | null>("cache_get_foto", { item });
+}
+
+export async function cacheSaveFoto(item: string, src: string): Promise<void> {
+  return invoke("cache_save_foto", { item, src });
+}
+
+export async function cacheUpsertOp(op: PendingOp): Promise<void> {
+  return invoke("cache_upsert_op", { op });
+}
+
+export async function cacheSetOpFlags(
+  serie: string,
+  mapicsOk?: boolean | null,
+  sqlOk?: boolean | null,
+): Promise<void> {
+  return invoke("cache_set_op_flags", { serie, mapicsOk, sqlOk });
+}
+
+export async function cacheRemoveOp(serie: string): Promise<void> {
+  return invoke("cache_remove_op", { serie });
+}
+
+export async function cacheMarkProcesada(serie: string): Promise<void> {
+  return invoke("cache_mark_procesada", { serie });
+}
+
+export async function cacheIsProcesada(serie: string): Promise<boolean> {
+  return invoke<boolean>("cache_is_procesada", { serie });
+}
+
+export async function syncBuffer(): Promise<{ sent: number; series: string[] }> {
+  return invoke("sync_buffer");
+}
+
+export interface TableCheck {
+  table: string;
+  exists: boolean;
+  isView: boolean;
+  columns: string[];
+  missing: string[];
+  ok: boolean;
+}
+
+export async function sqlCheckTables(): Promise<{ tables: TableCheck[] }> {
+  return invoke("sql_check_tables");
+}
+
+export async function sqlCreateTables(): Promise<{ tables: TableCheck[] }> {
+  return invoke("sql_create_tables");
+}
+
 export const KIT_SERIE_PREFIXES = ["MY", "my"];
 export const OPEN_PAREN = "(";
 

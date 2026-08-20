@@ -91,3 +91,34 @@ pub fn delete_kit(zone: &Zone, serie: &str) -> Result<usize, String> {
     let sql = render(&zone.mapics.query_delete, serie, &zone.estacion);
     execute_no_result(zone, &sql)
 }
+
+pub fn query_buffer_serials(zone: &Zone, serie: &str, limit: u32) -> Result<Vec<String>, String> {
+    let sql = zone
+        .mapics
+        .query_buffer
+        .replace("{SERIE}", serie)
+        .replace("{ESTACION}", &zone.estacion)
+        .replace("{LIMIT}", &limit.to_string());
+    let env = create_environment_v3().map_err(odbc_env_err)?;
+    let conn = env
+        .connect_with_connection_string(&conn_string(zone))
+        .map_err(odbc_err)?;
+    let stmt = Statement::with_parent(&conn).map_err(odbc_err)?;
+    let state = stmt.exec_direct(&sql).map_err(odbc_err)?;
+    match state {
+        ResultSetState::NoData(_) => Ok(Vec::new()),
+        ResultSetState::Data(mut stmt) => {
+            let mut serials = Vec::new();
+            while let Some(mut cursor) = stmt.fetch().map_err(odbc_err)? {
+                let val: String = cursor
+                    .get_data::<String>(1)
+                    .map_err(odbc_err)?
+                    .unwrap_or_default();
+                if !val.is_empty() {
+                    serials.push(val.trim().to_string());
+                }
+            }
+            Ok(serials)
+        }
+    }
+}
