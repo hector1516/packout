@@ -50,6 +50,32 @@ body {
 .topbar-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.sound-toggle-btn {
+  background: #111927;
+  border: 1px solid #2a3a55;
+  color: #e6edf5;
+  font-size: 16px;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.sound-toggle-btn:hover {
+  border-color: var(--brand-blue);
+}
+
+.sound-toggle-btn.muted {
+  color: #7c8aa0;
+  border-color: #3a1f24;
+  background: #14161c;
 }
 
 .settings {
@@ -1042,4 +1068,61 @@ button.danger {
     transform: translate(calc(var(--dx) * 1.15), calc(var(--dy) * 1.15)) scale(0.1);
     opacity: 0;
   }
+}
+
+.settings-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sound-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sound-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sound-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--brand-blue);
+}
+
+.sound-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #1f2a3d;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.sound-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  min-width: 0;
+}
+
+.sound-info .muted {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sound-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }

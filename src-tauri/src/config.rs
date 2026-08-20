@@ -77,12 +77,39 @@ pub struct Zone {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SoundConfig {
+    #[serde(default = "default_sound_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub complete: String,
+    #[serde(default)]
+    pub error: String,
+}
+
+fn default_sound_enabled() -> bool {
+    true
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        SoundConfig {
+            enabled: default_sound_enabled(),
+            complete: String::new(),
+            error: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub active_zone: String,
     pub sql: SqlDb,
     pub zones: Vec<Zone>,
     #[serde(default = "default_buffer_kits")]
     pub buffer_kits: u32,
+    #[serde(default = "SoundConfig::default")]
+    pub sound: SoundConfig,
 }
 
 fn default_buffer_kits() -> u32 {
@@ -102,6 +129,11 @@ impl AppConfig {
 pub const DEFAULT_CONFIG: &str = r#"{
   "activeZone": "imx",
   "bufferKits": 30,
+  "sound": {
+    "enabled": true,
+    "complete": "",
+    "error": ""
+  },
   "sql": {
     "server": "10.96.16.114",
     "database": "hussmann_insight",

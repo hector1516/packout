@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { usePackoutFlow, type FlowStatus } from "../hooks/usePackoutFlow";
 import { useConfig } from "../hooks/useConfig";
+import { saveConfig } from "../lib/config";
 import { useItemImages } from "../hooks/useItemImages";
 import { useConnectivity } from "../hooks/useConnectivity";
+import { useSounds } from "../hooks/useSounds";
 import { OperatorModal, PendingModal, ReprintModal, ImagesModal, BufferModal } from "./modals";
 import { Celebration } from "./Celebration";
 
@@ -21,9 +23,10 @@ export function MainScreen({
 }) {
   const { state, feed, recordPending, recordManual, reprint, listRecientes, loginAdmin, reset, clearError } =
     usePackoutFlow();
-  const { config } = useConfig();
+  const { config, set: setConfig } = useConfig();
   const { images, loading: imagesLoading, reload: reloadImages } = useItemImages(state.items);
   const conn = useConnectivity();
+  const playSound = useSounds();
   const [modal, setModal] = useState<ModalKind>("none");
   const [zoom, setZoom] = useState<{ src: string; key: string } | null>(null);
   const [scan, setScan] = useState("");
@@ -49,11 +52,16 @@ export function MainScreen({
   useEffect(() => {
     if (state.status === "approved" && prevStatusRef.current !== "approved") {
       setCelebrate(true);
+      playSound("complete");
       const t = setTimeout(() => setCelebrate(false), 5200);
       return () => clearTimeout(t);
     }
     prevStatusRef.current = state.status;
-  }, [state.status]);
+  }, [state.status, playSound]);
+
+  useEffect(() => {
+    if (state.error) playSound("error");
+  }, [state.error, playSound]);
 
   useEffect(() => {
     const focus = () => scanRef.current?.focus();
@@ -80,6 +88,18 @@ export function MainScreen({
   };
 
   const idle = state.status === "idle" || state.items.length === 0;
+  const soundOn = config?.sound?.enabled ?? true;
+
+  const toggleSound = async () => {
+    if (!config) return;
+    const next = { ...config, sound: { enabled: !soundOn, complete: config.sound?.complete ?? "", error: config.sound?.error ?? "" } };
+    setConfig(next);
+    try {
+      await saveConfig(next);
+    } catch (e) {
+      setConfig(config);
+    }
+  };
 
   return (
     <div className="screen">
@@ -95,6 +115,13 @@ export function MainScreen({
           {state.operatorAdmin && (
             <span className="chip">Admin: {state.operatorAdmin}</span>
           )}
+          <button
+            className={`sound-toggle-btn${soundOn ? "" : " muted"}`}
+            onClick={toggleSound}
+            title={soundOn ? "Desactivar sonido" : "Activar sonido"}
+          >
+            {soundOn ? "🔊" : "🔇"}
+          </button>
           {pendingVisible && (
             <button
               className={`btn buffer-btn${connOffline ? " offline" : ""}`}

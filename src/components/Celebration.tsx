@@ -93,9 +93,9 @@ export function Celebration({ serie, visible }: { serie: string; visible: boolea
         <div className="celebrate-badge">
           <span className="celebrate-star">★</span>
         </div>
-        <h2 className="celebrate-title">¡KIT COMPLETO!</h2>
-        <p className="celebrate-sub">Aprobado e insertado en MAPICS</p>
-        {serie && <div className="celebrate-serie">{serie}</div>}
+        <h2 className="celebrate-title">Número de serie</h2>
+        <div className="celebrate-serie">{serie}</div>
+        <p className="celebrate-sub">Completo</p>
         <div className="celebrate-next">
           Ahora escanea tu gafete para terminar y pasar al siguiente equipo
         </div>
