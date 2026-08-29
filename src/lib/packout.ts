@@ -195,6 +195,22 @@ export async function sqlCreateTables(): Promise<{ tables: TableCheck[] }> {
   return invoke("sql_create_tables");
 }
 
+export async function sqlCleanup(dias = 365): Promise<{ deleted: number; cutoff: string; detalles: { table: string; deleted: number }[] }> {
+  return invoke("sql_cleanup", { dias });
+}
+
+export async function sqlReportes(params: { tabla?: string; desde?: string; hasta?: string; resultado?: string; busqueda?: string; limit?: number; offset?: number }): Promise<{ rows: Record<string, unknown>[]; total: number }> {
+  return invoke("sql_reportes", params);
+}
+export async function sqlListUsuarios(): Promise<{ rows: Record<string, unknown>[] }> { return invoke("sql_list_usuarios"); }
+export async function sqlInsertUsuario(no: string, nombre: string): Promise<void> { return invoke("sql_insert_usuario", { no, nombre }); }
+export async function sqlUpdateUsuario(no: string, nombre: string): Promise<void> { return invoke("sql_update_usuario", { no, nombre }); }
+export async function sqlDeleteUsuario(no: string): Promise<void> { return invoke("sql_delete_usuario", { no }); }
+export async function sqlListAdmins(): Promise<{ rows: Record<string, unknown>[] }> { return invoke("sql_list_admins"); }
+export async function sqlInsertAdmin(no: string, nombre: string): Promise<void> { return invoke("sql_insert_admin", { no, nombre }); }
+export async function sqlUpdateAdmin(no: string, nombre: string): Promise<void> { return invoke("sql_update_admin", { no, nombre }); }
+export async function sqlDeleteAdmin(no: string): Promise<void> { return invoke("sql_delete_admin", { no }); }
+
 export const KIT_SERIE_PREFIXES = ["MY", "my"];
 export const OPEN_PAREN = "(";
 

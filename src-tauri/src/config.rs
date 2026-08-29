@@ -110,6 +110,14 @@ pub struct AppConfig {
     pub buffer_kits: u32,
     #[serde(default = "SoundConfig::default")]
     pub sound: SoundConfig,
+    #[serde(default = "default_modo")]
+    pub modo: String,
+    #[serde(default)]
+    pub modo_elegido: bool,
+}
+
+fn default_modo() -> String {
+    "operacion".into()
 }
 
 fn default_buffer_kits() -> u32 {
@@ -129,6 +137,8 @@ impl AppConfig {
 pub const DEFAULT_CONFIG: &str = r#"{
   "activeZone": "imx",
   "bufferKits": 30,
+  "modo": "operacion",
+  "modoElegido": false,
   "sound": {
     "enabled": true,
     "complete": "",

@@ -49,6 +49,8 @@ export interface AppConfig {
   zones: Zone[];
   bufferKits?: number;
   sound?: SoundConfig;
+  modo?: string;
+  modoElegido?: boolean;
 }
 
 export interface TestResult {

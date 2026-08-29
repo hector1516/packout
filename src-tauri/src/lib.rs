@@ -33,6 +33,103 @@ fn get_config(state: tauri::State<AppState>) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
+async fn sql_cleanup(
+    state: tauri::State<'_, AppState>,
+    dias: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let days = dias.unwrap_or(365);
+    run_blocking(move || sql::limpiar_registros_antiguos(&cfg, &zone, days)).await
+}
+
+#[tauri::command]
+async fn sql_reportes(
+    state: tauri::State<'_, AppState>,
+    tabla: Option<String>,
+    desde: Option<String>,
+    hasta: Option<String>,
+    resultado: Option<String>,
+    busqueda: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa configurada".to_string())?.clone();
+    let t = tabla.unwrap_or_else(|| "resultados".into());
+    let lim = limit.unwrap_or(200);
+    let off = offset.unwrap_or(0);
+    run_blocking(move || sql::consultar_reportes(&cfg, &zone, &t, desde, hasta, resultado, busqueda, lim, off)).await
+}
+
+#[tauri::command]
+async fn sql_list_usuarios(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    let rows = run_blocking(move || sql::listar_usuarios(&cfg, &zone)).await?;
+    Ok(json!({"rows": rows}))
+}
+
+#[tauri::command]
+async fn sql_insert_usuario(state: tauri::State<'_, AppState>, no: String, nombre: String) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    run_blocking(move || sql::insertar_usuario(&cfg, &zone, &no, &nombre)).await?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+async fn sql_update_usuario(state: tauri::State<'_, AppState>, no: String, nombre: String) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    run_blocking(move || sql::actualizar_usuario(&cfg, &zone, &no, &nombre)).await?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+async fn sql_delete_usuario(state: tauri::State<'_, AppState>, no: String) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    run_blocking(move || sql::eliminar_usuario(&cfg, &zone, &no)).await?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+async fn sql_list_admins(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    let rows = run_blocking(move || sql::listar_admins(&cfg, &zone)).await?;
+    Ok(json!({"rows": rows}))
+}
+
+#[tauri::command]
+async fn sql_insert_admin(state: tauri::State<'_, AppState>, no: String, nombre: String) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    run_blocking(move || sql::insertar_admin(&cfg, &zone, &no, &nombre)).await?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+async fn sql_update_admin(state: tauri::State<'_, AppState>, no: String, nombre: String) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    run_blocking(move || sql::actualizar_admin(&cfg, &zone, &no, &nombre)).await?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+async fn sql_delete_admin(state: tauri::State<'_, AppState>, no: String) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg.active().ok_or_else(|| "No hay zona activa".to_string())?.clone();
+    run_blocking(move || sql::eliminar_admin(&cfg, &zone, &no)).await?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
 fn save_sound_file(
     state: tauri::State<AppState>,
     kind: String,
@@ -622,6 +719,16 @@ pub fn run() {
             sql_check_serie_aprobada,
             sql_check_tables,
             sql_create_tables,
+            sql_cleanup,
+            sql_reportes,
+            sql_list_usuarios,
+            sql_insert_usuario,
+            sql_update_usuario,
+            sql_delete_usuario,
+            sql_list_admins,
+            sql_insert_admin,
+            sql_update_admin,
+            sql_delete_admin,
             mapics_precache,
             cache_snapshot,
             cache_get_kit,
