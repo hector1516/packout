@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { MainScreen } from "./components/MainScreen";
+import { AdminPanel } from "./components/AdminPanel";
+import { ModeSelector } from "./components/ModeSelector";
+import { useConfig } from "./hooks/useConfig";
 import { useUpdater } from "./hooks/useUpdater";
 import "./App.css";
 
@@ -8,11 +11,15 @@ function App() {
   const [page, setPage] = useState<"main" | "settings">("main");
   const [splash, setSplash] = useState(true);
   const updater = useUpdater();
+  const { config, set: setConfig, loading: configLoading } = useConfig();
 
   useEffect(() => {
     const t = setTimeout(() => setSplash(false), 1400);
     return () => clearTimeout(t);
   }, []);
+
+  const showModeSelector = !configLoading && config && !config.modoElegido;
+  const isAdmin = config?.modo === "administracion";
 
   return (
     <div className="app">
@@ -25,8 +32,14 @@ function App() {
           </div>
         </div>
       )}
-      {page === "main" ? (
-        <MainScreen onOpenSettings={() => setPage("settings")} />
+      {showModeSelector && config ? (
+        <ModeSelector config={config} onChosen={(next) => setConfig(next)} />
+      ) : page === "main" ? (
+        isAdmin ? (
+          <AdminPanel onOpenSettings={() => setPage("settings")} />
+        ) : (
+          <MainScreen onOpenSettings={() => setPage("settings")} />
+        )
       ) : (
         <SettingsPanel onBack={() => setPage("main")} updater={updater} />
       )}

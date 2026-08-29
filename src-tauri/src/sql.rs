@@ -468,6 +468,194 @@ pub fn crear_tablas_faltantes(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>
     Ok(out)
 }
 
+fn parse_fecha_hora(s: &str) -> Option<chrono::NaiveDateTime> {
+    let t = s
+        .replace("a. m.", "AM")
+        .replace("p. m.", "PM")
+        .replace(',', " ")
+        .trim()
+        .to_string();
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fmts = [
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %I:%M:%S %p",
+        "%Y-%m-%d %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S",
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+    ];
+    for fmt in fmts {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&t, fmt) {
+            return Some(dt);
+        }
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(&t, fmt) {
+            return Some(d.and_hms_opt(0, 0, 0).unwrap());
+        }
+    }
+    None
+}
+
+pub fn limpiar_registros_antiguos(
+    cfg: &AppConfig,
+    zone: &Zone,
+    dias: i64,
+) -> Result<Value, String> {
+    let db = cfg.sql_for(Some(zone));
+    let cutoff = chrono::Local::now().naive_local() - chrono::Duration::days(dias);
+    let mut total_deleted: i64 = 0;
+    let mut detalles = Vec::new();
+    for table in [&zone.tables.resultados, &zone.tables.errores] {
+        if !table_exists(db, table)? {
+            detalles.push(json!({"table": table, "deleted": 0, "skipped": true}));
+            continue;
+        }
+        let cols = list_table_columns(db, table)?;
+        let has_id = cols.iter().any(|c| c.eq_ignore_ascii_case("Id"));
+        let sql = if has_id {
+            format!("SELECT Id, FechaHora FROM {}", table)
+        } else {
+            format!("SELECT FechaHora FROM {}", table)
+        };
+        let rows = open(db, &sql)?;
+        let mut to_delete: Vec<String> = Vec::new();
+        let mut ids: Vec<i64> = Vec::new();
+        for r in &rows {
+            let fh = r.get("FechaHora").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(dt) = parse_fecha_hora(fh) {
+                if dt < cutoff {
+                    if has_id {
+                        if let Some(id) = r.get("Id").and_then(|v| {
+                            v.as_i64()
+                                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+                        }) {
+                            ids.push(id);
+                        } else {
+                            to_delete.push(fh.to_string());
+                        }
+                    } else {
+                        to_delete.push(fh.to_string());
+                    }
+                }
+            }
+        }
+        let deleted = if has_id && !ids.is_empty() {
+            let list = ids.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+            exec(db, &format!("DELETE FROM {} WHERE Id IN ({})", table, list))?;
+            ids.len() as i64
+        } else if !to_delete.is_empty() {
+            for fh in to_delete.iter() {
+                exec(
+                    db,
+                    &format!("DELETE FROM {} WHERE FechaHora = '{}'", table, esc(fh)),
+                )?;
+            }
+            to_delete.len() as i64
+        } else {
+            0
+        };
+        total_deleted += deleted;
+        detalles.push(json!({"table": table, "deleted": deleted}));
+    }
+    Ok(json!({"deleted": total_deleted, "cutoff": cutoff.format("%d/%m/%Y").to_string(), "detalles": detalles}))
+}
+
+pub fn listar_usuarios(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>, String> {
+    let db = cfg.sql_for(Some(zone));
+    open(db, &format!("SELECT * FROM {} ORDER BY No", zone.tables.usuarios))
+}
+
+pub fn insertar_usuario(cfg: &AppConfig, zone: &Zone, no: &str, nombre: &str) -> Result<(), String> {
+    let db = cfg.sql_for(Some(zone));
+    exec(db, &format!("INSERT INTO {} (No, Nombre) VALUES ('{}', '{}')", zone.tables.usuarios, esc(no), esc(nombre)))
+}
+
+pub fn actualizar_usuario(cfg: &AppConfig, zone: &Zone, no: &str, nombre: &str) -> Result<(), String> {
+    let db = cfg.sql_for(Some(zone));
+    exec(db, &format!("UPDATE {} SET Nombre='{}' WHERE No='{}'", zone.tables.usuarios, esc(nombre), esc(no)))
+}
+
+pub fn eliminar_usuario(cfg: &AppConfig, zone: &Zone, no: &str) -> Result<(), String> {
+    let db = cfg.sql_for(Some(zone));
+    exec(db, &format!("DELETE FROM {} WHERE No='{}'", zone.tables.usuarios, esc(no)))
+}
+
+pub fn listar_admins(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>, String> {
+    let db = cfg.sql_for(Some(zone));
+    open(db, &format!("SELECT * FROM {} ORDER BY No", zone.tables.admin))
+}
+
+pub fn insertar_admin(cfg: &AppConfig, zone: &Zone, no: &str, nombre: &str) -> Result<(), String> {
+    let db = cfg.sql_for(Some(zone));
+    exec(db, &format!("INSERT INTO {} (No, Nombre) VALUES ('{}', '{}')", zone.tables.admin, esc(no), esc(nombre)))
+}
+
+pub fn actualizar_admin(cfg: &AppConfig, zone: &Zone, no: &str, nombre: &str) -> Result<(), String> {
+    let db = cfg.sql_for(Some(zone));
+    exec(db, &format!("UPDATE {} SET Nombre='{}' WHERE No='{}'", zone.tables.admin, esc(nombre), esc(no)))
+}
+
+pub fn eliminar_admin(cfg: &AppConfig, zone: &Zone, no: &str) -> Result<(), String> {
+    let db = cfg.sql_for(Some(zone));
+    exec(db, &format!("DELETE FROM {} WHERE No='{}'", zone.tables.admin, esc(no)))
+}
+
+pub fn consultar_reportes(
+    cfg: &AppConfig,
+    zone: &Zone,
+    tabla: &str,
+    desde: Option<String>,
+    hasta: Option<String>,
+    resultado: Option<String>,
+    busqueda: Option<String>,
+    limit: i64,
+    offset: i64,
+) -> Result<Value, String> {
+    let table = match tabla {
+        "errores" => &zone.tables.errores,
+        _ => &zone.tables.resultados,
+    };
+    if !table_exists(cfg.sql_for(Some(zone)), table)? {
+        return Ok(json!({"rows": [], "total": 0}));
+    }
+    let rows = open(cfg.sql_for(Some(zone)), &format!("SELECT * FROM {}", table))?;
+    let desde_dt = desde.as_deref().and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()).map(|d| d.and_hms_opt(0,0,0).unwrap());
+    let hasta_dt = hasta.as_deref().and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()).map(|d| d.and_hms_opt(23,59,59).unwrap());
+    let busqueda_lc = busqueda.as_deref().map(|s| s.to_lowercase()).unwrap_or_default();
+    let resultado_lc = resultado.as_deref().map(|s| s.to_lowercase()).unwrap_or_default();
+    let mut filtered: Vec<Value> = rows.into_iter().filter(|r| {
+        if !resultado_lc.is_empty() {
+            let rv = r.get("Resultado").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            if rv != resultado_lc { return false; }
+        }
+        if desde_dt.is_some() || hasta_dt.is_some() {
+            let fh = r.get("FechaHora").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(dt) = parse_fecha_hora(fh) {
+                if let Some(d) = desde_dt { if dt < d { return false; } }
+                if let Some(h) = hasta_dt { if dt > h { return false; } }
+            } else if desde_dt.is_some() {
+                return false;
+            }
+        }
+        if !busqueda_lc.is_empty() {
+            let hay = r.as_object().map(|o| o.values().any(|v| {
+                let s = if let Some(st) = v.as_str() { st.to_lowercase() } else { v.to_string().to_lowercase() };
+                s.contains(&busqueda_lc)
+            })).unwrap_or(false);
+            if !hay { return false; }
+        }
+        true
+    }).collect();
+    filtered.sort_by(|a, b| {
+        let da = a.get("FechaHora").and_then(|v| v.as_str()).and_then(parse_fecha_hora);
+        let db = b.get("FechaHora").and_then(|v| v.as_str()).and_then(parse_fecha_hora);
+        db.cmp(&da)
+    });
+    let total = filtered.len() as i64;
+    let paged: Vec<Value> = filtered.into_iter().skip(offset as usize).take(limit as usize).collect();
+    Ok(json!({"rows": paged, "total": total}))
+}
+
 fn esc(s: &str) -> String {
     s.replace('\'', "")
 }

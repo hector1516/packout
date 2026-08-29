@@ -4,6 +4,7 @@ import { useConfig } from "../hooks/useConfig";
 import { saveConfig } from "../lib/config";
 import { useItemImages } from "../hooks/useItemImages";
 import { useConnectivity } from "../hooks/useConnectivity";
+import { useRetention } from "../hooks/useRetention";
 import { useSounds } from "../hooks/useSounds";
 import { OperatorModal, PendingModal, ReprintModal, ImagesModal, BufferModal } from "./modals";
 import { Celebration } from "./Celebration";
@@ -26,6 +27,7 @@ export function MainScreen({
   const { config, set: setConfig } = useConfig();
   const { images, loading: imagesLoading, reload: reloadImages } = useItemImages(state.items);
   const conn = useConnectivity();
+  useRetention();
   const playSound = useSounds();
   const [modal, setModal] = useState<ModalKind>("none");
   const [zoom, setZoom] = useState<{ src: string; key: string } | null>(null);

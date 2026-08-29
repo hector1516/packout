@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { save as dialogSave, open as dialogOpen } from "@tauri-apps/plugin-dialog";
+import { sqlCleanup } from "../lib/packout";
 import {
   setActiveZone,
   testZone,
@@ -499,6 +500,59 @@ export function SettingsPanel({
           </button>
         </section>
       )}
+
+      {config && (
+        <section className="card">
+          <h2>Modo de la aplicación</h2>
+          <p className="muted">Cambia entre Operación (escaneo) y Administración (reportes, fotos, usuarios). Se guarda y se recuerda al abrir.</p>
+          <div className="mode-toggle">
+            <button
+              className={`btn ${config.modo !== "administracion" ? "primary" : ""}`}
+              onClick={async () => {
+                const next = { ...config, modo: "operacion", modoElegido: true };
+                setConfig(next);
+                await saveConfig(next);
+                setStatus("Modo cambiado a Operación");
+              }}
+            >
+              ⚙️ Operación
+            </button>
+            <button
+              className={`btn ${config.modo === "administracion" ? "primary" : ""}`}
+              onClick={async () => {
+                const next = { ...config, modo: "administracion", modoElegido: true };
+                setConfig(next);
+                await saveConfig(next);
+                setStatus("Modo cambiado a Administración");
+              }}
+            >
+              📊 Administración
+            </button>
+          </div>
+          <p className="muted">Actual: <strong>{config.modo === "administracion" ? "Administración" : "Operación"}</strong></p>
+        </section>
+      )}
+
+      <section className="card">
+        <h2>Mantenimiento</h2>
+        <p className="muted">Conserva solo el último año. Borra registros de hace más de 365 días.</p>
+        <button
+          className="btn"
+          onClick={async () => {
+            setStatus("Limpiando registros antiguos...");
+            try {
+              const r = await sqlCleanup(365);
+              setStatus(`Limpieza completada: ${r.deleted} registros eliminados (previo a ${r.cutoff})`);
+              localStorage.setItem("packout_last_cleanup", String(Date.now()));
+            } catch (e) {
+              setStatus(String(e));
+            }
+          }}
+        >
+          Limpiar registros antiguos (&gt;1 año)
+        </button>
+        <p className="muted">Automático cada semana al abrir la app.</p>
+      </section>
 
       {tablesOpen && <TablesModal onClose={() => setTablesOpen(false)} />}
 
