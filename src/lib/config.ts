@@ -122,6 +122,10 @@ export async function mapicsTest(params?: {
   return invoke<MapicsTestResult>("mapics_test", params ?? {});
 }
 
+export async function restoreMapicsDefaults(zoneId: string): Promise<AppConfig> {
+  return invoke<AppConfig>("restore_mapics_defaults", { zoneId });
+}
+
 export async function saveSoundFile(kind: "complete" | "error", sourcePath: string): Promise<string> {
   return invoke<string>("save_sound_file", { kind, sourcePath });
 }
