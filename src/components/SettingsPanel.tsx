@@ -7,6 +7,10 @@ import {
   exportConfig,
   importConfig,
   saveConfig,
+  sqlScanRed,
+  sqlListDatabases,
+  mapicsTest,
+  type MapicsTestResult,
   type AppConfig,
   type TestResult,
   type Zone,
@@ -62,6 +66,13 @@ export function SettingsPanel({
   const [saving, setSaving] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
   const [soundsOpen, setSoundsOpen] = useState(false);
+  const [scanBase, setScanBase] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [servers, setServers] = useState<string[]>([]);
+  const [listing, setListing] = useState(false);
+  const [databases, setDatabases] = useState<string[]>([]);
+  const [mapicsTesting, setMapicsTesting] = useState(false);
+  const [mapicsRes, setMapicsRes] = useState<MapicsTestResult | null>(null);
 
   if (loading) return <div className="center">Cargando configuración...</div>;
   if (!config) return <div className="center">Error: {error}</div>;
@@ -185,6 +196,73 @@ export function SettingsPanel({
       );
     } catch (e) {
       setStatus(String(e));
+    }
+  };
+
+  const handleScan = async () => {
+    if (!config) return;
+    const base = scanBase.trim() || config.sql.server;
+    if (!base.trim()) {
+      setStatus("Escribe la IP base de la red (ej. 10.96.16.114)");
+      return;
+    }
+    setScanning(true);
+    setStatus(`Buscando servidores SQL en la red de ${base}...`);
+    try {
+      const res = await sqlScanRed(base);
+      setServers(res.servers);
+      setStatus(
+        res.servers.length > 0
+          ? `${res.servers.length} servidor(es) con SQL encontrados`
+          : "No se encontró ningún servidor SQL en esa red",
+      );
+    } catch (e) {
+      setStatus(`Error al buscar: ${e}`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const handleListDatabases = async () => {
+    if (!config) return;
+    setListing(true);
+    setStatus(`Pidiendo lista de bases a ${config.sql.server}...`);
+    try {
+      const res = await sqlListDatabases(
+        config.sql.server,
+        config.sql.user,
+        config.sql.password,
+      );
+      setDatabases(res.databases);
+      setStatus(
+        res.databases.length > 0
+          ? `${res.databases.length} base(s) encontradas`
+          : "Conectó pero no devolvió bases",
+      );
+    } catch (e) {
+      setStatus(`Error al listar bases: ${e}`);
+    } finally {
+      setListing(false);
+    }
+  };
+
+  const handleTestMapics = async () => {
+    if (!zone) return;
+    setMapicsTesting(true);
+    setStatus("Probando conexión MAPICS...");
+    try {
+      const res = await mapicsTest({
+        server: zone.mapics.server,
+        dsn: zone.mapics.dsn,
+        user: zone.mapics.user,
+        password: zone.mapics.password,
+      });
+      setMapicsRes(res);
+      setStatus(res.ok ? "MAPICS conectado" : `MAPICS falló: ${res.msg}`);
+    } catch (e) {
+      setStatus(`Error al probar MAPICS: ${e}`);
+    } finally {
+      setMapicsTesting(false);
     }
   };
 
@@ -351,6 +429,42 @@ export function SettingsPanel({
                 }
               />
             </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={handleTestMapics} disabled={mapicsTesting}>
+                {mapicsTesting ? "Probando..." : "🔌 Probar conexión MAPICS"}
+              </button>
+            </div>
+            {mapicsRes && (
+              <>
+                <p className={mapicsRes.ok ? "ok" : "error"}>
+                  {mapicsRes.ok ? "OK" : "FAIL"} — {mapicsRes.msg}
+                  <br />
+                  <span className="mono">Query: {mapicsRes.query}</span>
+                </p>
+                {mapicsRes.ok && mapicsRes.rows.length > 0 && (
+                  <table className="admin-table">
+                    <thead>
+                      <tr>
+                        {mapicsRes.columns.map((c) => (
+                          <th key={c}>{c}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mapicsRes.rows.map((r, i) => (
+                        <tr key={i}>
+                          {mapicsRes.columns.map((c) => (
+                            <td key={c} className="mono">
+                              {r[c] ?? ""}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
+            )}
             <Field
               label="Query Kit (usa {SERIE})"
               value={zone.mapics.queryKit}
@@ -435,6 +549,77 @@ export function SettingsPanel({
                 }
               />
             </div>
+            <h3>Buscar servidor en la red</h3>
+            <p className="muted">
+              Escribe la IP (ej. 10.96.16.114) y busca equipos con SQL Server
+              (puerto 1433) en esa red. Luego elige uno de la lista.
+            </p>
+            <div className="grid">
+              <Field
+                label="IP base de la red (vacío = usar servidor actual)"
+                value={scanBase}
+                onChange={setScanBase}
+              />
+            </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={handleScan} disabled={scanning}>
+                {scanning ? "Buscando..." : "🔍 Buscar servidores"}
+              </button>
+            </div>
+            {servers.length > 0 && (
+              <label className="field">
+                <span>Servidores encontrados — elige uno para usarlo</span>
+                <select
+                  value={servers.includes(config.sql.server) ? config.sql.server : ""}
+                  onChange={(e) => {
+                    const v = e.currentTarget.value;
+                    if (v) {
+                      patch((cfg) => ({ ...cfg, sql: { ...cfg.sql, server: v } }));
+                      setStatus(`Servidor cambiado a ${v}. No olvides Guardar.`);
+                    }
+                  }}
+                >
+                  <option value="">— Seleccionar —</option>
+                  {servers.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <h3>Elegir base de datos</h3>
+            <p className="muted">
+              Con el servidor, usuario y password de arriba, pide la lista de
+              bases y elige una.
+            </p>
+            <div className="modal-actions">
+              <button className="btn" onClick={handleListDatabases} disabled={listing}>
+                {listing ? "Pidiendo lista..." : "📋 Listar bases de datos"}
+              </button>
+            </div>
+            {databases.length > 0 && (
+              <label className="field">
+                <span>Bases encontradas — elige una para usarla</span>
+                <select
+                  value={databases.includes(config.sql.database) ? config.sql.database : ""}
+                  onChange={(e) => {
+                    const v = e.currentTarget.value;
+                    if (v) {
+                      patch((cfg) => ({ ...cfg, sql: { ...cfg.sql, database: v } }));
+                      setStatus(`Base de datos cambiada a ${v}. No olvides Guardar.`);
+                    }
+                  }}
+                >
+                  <option value="">— Seleccionar —</option>
+                  {databases.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </section>
         </>
       )}
