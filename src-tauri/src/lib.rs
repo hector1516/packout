@@ -220,6 +220,52 @@ async fn test_zone(state: tauri::State<'_, AppState>) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
+async fn sql_scan_red(base_ip: String) -> Result<serde_json::Value, String> {
+    let found = run_blocking(move || sql::scan_subnet(&base_ip)).await?;
+    Ok(json!({ "servers": found, "count": found.len() }))
+}
+
+#[tauri::command]
+async fn sql_list_databases(
+    server: String,
+    user: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let dbs = run_blocking(move || sql::list_databases(&server, &user, &password)).await?;
+    Ok(json!({ "databases": dbs, "count": dbs.len() }))
+}
+
+#[tauri::command]
+async fn mapics_test(
+    state: tauri::State<'_, AppState>,
+    server: Option<String>,
+    dsn: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let srv = server.unwrap_or_else(|| zone.mapics.server.clone());
+    let d = dsn.unwrap_or_else(|| zone.mapics.dsn.clone());
+    let u = user.unwrap_or_else(|| zone.mapics.user.clone());
+    let p = password.unwrap_or_else(|| zone.mapics.password.clone());
+    let res = run_blocking(move || mapics::test_connection_params(&d, &u, &p, &srv)).await;
+    Ok(match res {
+        Ok(r) => json!({
+            "ok": true,
+            "msg": format!("{} fila(s) devueltas", r.rows.len()),
+            "query": mapics::TEST_QUERY,
+            "columns": r.columns,
+            "rows": r.rows,
+        }),
+        Err(e) => json!({"ok": false, "msg": e, "query": mapics::TEST_QUERY, "columns": [], "rows": []}),
+    })
+}
+
+#[tauri::command]
 async fn mapics_query_kit(
     state: tauri::State<'_, AppState>,
     serie: String,
@@ -707,6 +753,9 @@ pub fn run() {
             import_config,
             set_active_zone,
             test_zone,
+            mapics_test,
+            sql_scan_red,
+            sql_list_databases,
             mapics_query_kit,
             mapics_insert_kit,
             mapics_delete_kit,

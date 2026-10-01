@@ -18,17 +18,79 @@ fn conn_string(zone: &Zone) -> String {
     )
 }
 
-pub fn test_connection(zone: &Zone) -> Result<String, String> {
+pub const TEST_QUERY: &str = "SELECT 1 FROM SYSIBM.SYSDUMMY1";
+
+/// Ejecuta un SELECT y devuelve (columnas, filas).
+pub fn run_select(
+    cs: &str,
+    sql: &str,
+) -> Result<(Vec<String>, Vec<std::collections::BTreeMap<String, Value>>), String> {
     let env = create_environment_v3().map_err(odbc_env_err)?;
-    let conn = env
-        .connect_with_connection_string(&conn_string(zone))
-        .map_err(odbc_err)?;
+    let conn = env.connect_with_connection_string(cs).map_err(odbc_err)?;
     let stmt = Statement::with_parent(&conn).map_err(odbc_err)?;
-    stmt.exec_direct("SELECT 1 FROM SYSIBM.SYSDUMMY1")
-        .map_err(odbc_err)?;
+    let state = stmt.exec_direct(sql).map_err(odbc_err)?;
+    match state {
+        ResultSetState::NoData(_) => Ok((Vec::new(), Vec::new())),
+        ResultSetState::Data(mut stmt) => {
+            let ncols = stmt.num_result_cols().map_err(odbc_err)? as usize;
+            let labels: Vec<String> = (1..=ncols as u16)
+                .map(|i| {
+                    stmt.describe_col(i)
+                        .map(|d| d.name)
+                        .unwrap_or_else(|_| format!("col{}", i))
+                })
+                .collect();
+            let mut rows = Vec::new();
+            while let Some(mut cursor) = stmt.fetch().map_err(odbc_err)? {
+                let mut obj = std::collections::BTreeMap::new();
+                for (idx, label) in labels.iter().enumerate() {
+                    let col = (idx + 1) as u16;
+                    let val: String = cursor
+                        .get_data::<String>(col)
+                        .map_err(odbc_err)?
+                        .unwrap_or_default();
+                    obj.insert(label.clone(), json!(val));
+                }
+                rows.push(obj);
+            }
+            Ok((labels, rows))
+        }
+    }
+}
+
+pub struct TestResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<std::collections::BTreeMap<String, Value>>,
+}
+
+pub fn test_connection_params(
+    dsn: &str,
+    user: &str,
+    password: &str,
+    server: &str,
+) -> Result<TestResult, String> {
+    if dsn.trim().is_empty() {
+        return Err("Falta el DSN de MAPICS".into());
+    }
+    let cs = format!("DSN={};UID={};PWD={}", dsn, user, password);
+    let (columns, rows) = run_select(&cs, TEST_QUERY)?;
+    let _ = server;
+    Ok(TestResult { columns, rows })
+}
+
+pub fn test_connection(zone: &Zone) -> Result<String, String> {
+    let r = test_connection_params(
+        &zone.mapics.dsn,
+        &zone.mapics.user,
+        &zone.mapics.password,
+        &zone.mapics.server,
+    )?;
     Ok(format!(
-        "Conectado a MAPICS {} (servidor {})",
-        zone.mapics.dsn, zone.mapics.server
+        "Conectado a MAPICS {} (servidor {}) — {} fila(s) de '{}'",
+        zone.mapics.dsn,
+        zone.mapics.server,
+        r.rows.len(),
+        TEST_QUERY
     ))
 }
 

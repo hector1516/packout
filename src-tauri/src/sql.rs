@@ -660,6 +660,77 @@ fn esc(s: &str) -> String {
     s.replace('\'', "")
 }
 
+/// Extrae los 3 primeros octetos desde "10.96.16.114", "10.96.16" o "10.96.16.0/24".
+fn parse_subnet24(base: &str) -> Result<(u8, u8, u8), String> {
+    let b = base
+        .trim()
+        .trim_end_matches("/24")
+        .trim_end_matches(".0")
+        .trim_end_matches('.');
+    let parts: Vec<&str> = b.split('.').collect();
+    let oct = |i: usize| {
+        parts
+            .get(i)
+            .ok_or_else(|| "IP incompleta".to_string())
+            .and_then(|p| {
+                p.parse::<u8>()
+                    .map_err(|_| format!("Octeto inválido: '{}'", p))
+            })
+    };
+    match parts.len() {
+        3 => Ok((oct(0)?, oct(1)?, oct(2)?)),
+        4 => Ok((oct(0)?, oct(1)?, oct(2)?)),
+        _ => Err(
+            "Escribe la IP base, ej. 10.96.16.114 o 10.96.16.0/24".to_string(),
+        ),
+    }
+}
+
+/// Rastrea la red /24 de la IP dada probando TCP al puerto 1433 (SQL Server).
+/// Devuelve las IPs que aceptan conexión.
+pub fn scan_subnet(base: &str) -> Result<Vec<String>, String> {
+    let (a, b, c) = parse_subnet24(base)?;
+    rt().block_on(async move {
+        let timeout = std::time::Duration::from_millis(500);
+        let probes = (1u8..=254).map(|h| async move {
+            let ip = format!("{}.{}.{}.{}", a, b, c, h);
+            let addr = format!("{}:1433", ip);
+            match tokio::time::timeout(timeout, TcpStream::connect(&addr)).await {
+                Ok(Ok(_)) => Some(ip),
+                _ => None,
+            }
+        });
+        let results = futures::future::join_all(probes).await;
+        let mut found: Vec<String> = results.into_iter().flatten().collect();
+        found.sort();
+        Ok(found)
+    })
+}
+
+/// Lista las bases de datos del servidor usando el usuario y password dados.
+/// Se conecta a `master` y lee `sys.databases`.
+pub fn list_databases(server: &str, user: &str, password: &str) -> Result<Vec<String>, String> {
+    if server.trim().is_empty() {
+        return Err("Indica el servidor primero".to_string());
+    }
+    let db = SqlDb {
+        server: server.trim().to_string(),
+        database: "master".to_string(),
+        user: user.to_string(),
+        password: password.to_string(),
+        driver: "SQL Server".to_string(),
+    };
+    let rows = open(&db, "SELECT name FROM sys.databases ORDER BY name")?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            r.get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

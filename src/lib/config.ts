@@ -83,6 +83,45 @@ export async function testZone(): Promise<TestResult> {
   return invoke<TestResult>("test_zone");
 }
 
+export interface ScanRedResult {
+  servers: string[];
+  count: number;
+}
+
+export async function sqlScanRed(baseIp: string): Promise<ScanRedResult> {
+  return invoke<ScanRedResult>("sql_scan_red", { baseIp });
+}
+
+export interface ListDatabasesResult {
+  databases: string[];
+  count: number;
+}
+
+export async function sqlListDatabases(
+  server: string,
+  user: string,
+  password: string,
+): Promise<ListDatabasesResult> {
+  return invoke<ListDatabasesResult>("sql_list_databases", { server, user, password });
+}
+
+export interface MapicsTestResult {
+  ok: boolean;
+  msg: string;
+  query: string;
+  columns: string[];
+  rows: Array<Record<string, string>>;
+}
+
+export async function mapicsTest(params?: {
+  server?: string;
+  dsn?: string;
+  user?: string;
+  password?: string;
+}): Promise<MapicsTestResult> {
+  return invoke<MapicsTestResult>("mapics_test", params ?? {});
+}
+
 export async function saveSoundFile(kind: "complete" | "error", sourcePath: string): Promise<string> {
   return invoke<string>("save_sound_file", { kind, sourcePath });
 }
