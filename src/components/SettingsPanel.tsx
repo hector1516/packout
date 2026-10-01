@@ -10,6 +10,7 @@ import {
   sqlScanRed,
   sqlListDatabases,
   mapicsTest,
+  restoreMapicsDefaults,
   type MapicsTestResult,
   type AppConfig,
   type TestResult,
@@ -432,6 +433,20 @@ export function SettingsPanel({
             <div className="modal-actions">
               <button className="btn" onClick={handleTestMapics} disabled={mapicsTesting}>
                 {mapicsTesting ? "Probando..." : "🔌 Probar conexión MAPICS"}
+              </button>
+              <button
+                className="btn"
+                onClick={async () => {
+                  try {
+                    const next = await restoreMapicsDefaults(zone.id);
+                    setConfig(next);
+                    setStatus("Queries MAPICS restauradas a fábrica (LINEPR = 8)");
+                  } catch (e) {
+                    setStatus(String(e));
+                  }
+                }}
+              >
+                ♻️ Restaurar queries de fábrica
               </button>
             </div>
             {mapicsRes && (

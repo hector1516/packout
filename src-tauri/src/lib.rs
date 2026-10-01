@@ -220,6 +220,22 @@ async fn test_zone(state: tauri::State<'_, AppState>) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
+fn restore_mapics_defaults(
+    state: tauri::State<AppState>,
+    zone_id: String,
+) -> Result<AppConfig, String> {
+    let mut cfg = load_config(&state)?;
+    let zone = cfg
+        .zones
+        .iter_mut()
+        .find(|z| z.id == zone_id)
+        .ok_or_else(|| format!("Zona '{}' no encontrada", zone_id))?;
+    config::restore_default_queries(zone);
+    config::save(&state.app_data_dir, &cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
 async fn sql_scan_red(base_ip: String) -> Result<serde_json::Value, String> {
     let found = run_blocking(move || sql::scan_subnet(&base_ip)).await?;
     Ok(json!({ "servers": found, "count": found.len() }))
@@ -754,6 +770,7 @@ pub fn run() {
             set_active_zone,
             test_zone,
             mapics_test,
+            restore_mapics_defaults,
             sql_scan_red,
             sql_list_databases,
             mapics_query_kit,
