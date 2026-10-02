@@ -12,18 +12,21 @@ import {
   type TableCheck,
 } from "../lib/packout";
 import { saveSoundFile } from "../lib/config";
+import { BulkImageImport } from "./BulkImageImport";
 export function Modal({
   title,
   onClose,
   children,
+  wide,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  wide?: boolean;
 }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal ${wide ? "modal-wide" : ""}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <span>{title}</span>
           <button className="btn subtle" onClick={onClose}>
@@ -260,8 +263,15 @@ export function ImagesModal({
   };
 
   return (
-    <Modal title="Imágenes de items" onClose={onClose}>
+    <Modal title="Imágenes de items" onClose={onClose} wide>
       <div className="img-manager">
+        <BulkImageImport
+          compact
+          onDone={() => {
+            refresh();
+            onChanged();
+          }}
+        />
         <Field label="Item (código)">
           <input
             value={item}
