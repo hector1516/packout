@@ -83,6 +83,36 @@ export async function testZone(): Promise<TestResult> {
   return invoke<TestResult>("test_zone");
 }
 
+export interface GuardStatus {
+  blocked: boolean;
+  authFailures: number;
+  netFailures: number;
+  maxAttempts: number;
+  lastError: string;
+  blockReason: string;
+  blockCount: number;
+}
+
+export interface HealthCheckResult {
+  sql: { ok: boolean; msg: string };
+  mapics: { ok: boolean; msg: string };
+  guard: GuardStatus;
+}
+
+/** Ping sin autenticacion: seguro para polling. */
+export async function healthCheck(): Promise<HealthCheckResult> {
+  return invoke<HealthCheckResult>("health_check");
+}
+
+export async function sqlGuardStatus(): Promise<GuardStatus> {
+  return invoke<GuardStatus>("sql_guard_status");
+}
+
+/** Reinicia el circuito de proteccion tras corregir el password. */
+export async function sqlGuardReset(): Promise<GuardStatus> {
+  return invoke<GuardStatus>("sql_guard_reset");
+}
+
 export interface ScanRedResult {
   servers: string[];
   count: number;

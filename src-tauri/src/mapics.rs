@@ -1,6 +1,7 @@
 use crate::config::{render, Zone};
 use odbc::{create_environment_v3, ResultSetState, Statement};
 use serde_json::{json, Value};
+use std::net::ToSocketAddrs;
 
 pub fn odbc_err(e: odbc::DiagnosticRecord) -> String {
     e.to_string()
@@ -16,6 +17,23 @@ fn conn_string(zone: &Zone) -> String {
         "DSN={};UID={};PWD={}",
         zone.mapics.dsn, zone.mapics.user, zone.mapics.password
     )
+}
+
+/// Disponibilidad de MAPICS sin abrir sesion ODBC.
+///
+/// Solo resuelve el nombre del servidor, no autentica contra el AS/400, asi
+/// el polling no genera intentos fallidos en el servidor de MAPICS.
+pub fn ping(server: &str) -> Result<String, String> {
+    if server.trim().is_empty() {
+        return Ok("MAPICS sin servidor configurado".into());
+    }
+    match (server, 23u16).to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(a) => Ok(format!("{} resuelve a {}", server, a)),
+            None => Err(format!("{} no resuelve a ninguna direccion", server)),
+        },
+        Err(e) => Err(format!("{} no resuelve: {}", server, e)),
+    }
 }
 
 pub const TEST_QUERY: &str = "SELECT 1 FROM SYSIBM.SYSDUMMY1";
