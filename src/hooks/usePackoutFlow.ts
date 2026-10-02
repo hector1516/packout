@@ -29,6 +29,26 @@ import { useConfig } from "./useConfig";
 
 export type FlowStatus = "idle" | "kit" | "approved" | "done";
 
+/** Que esta esperando la app en este momento. */
+export type PasoEsperado = "serie" | "item" | "gafete" | "listo";
+
+export const TEXTO_PASO: Record<PasoEsperado, string> = {
+  serie: "NÚMERO DE SERIE",
+  item: "ITEM DEL KIT",
+  gafete: "GAFETE",
+  listo: "NINGUNO",
+};
+
+/** AvisoShown cuando el operador escanea algo que no corresponde. */
+export interface FlowNotice {
+  titulo: string;
+  motivo: string;
+  esperado: PasoEsperado;
+  recibido: string;
+  /** El escaneo no se aplico. */
+  rejected: boolean;
+}
+
 export interface FlowState {
   status: FlowStatus;
   serie: string;
@@ -41,6 +61,17 @@ export interface FlowState {
   message: string;
   error: string;
   historial: KitRow[];
+  aviso: FlowNotice | null;
+}
+
+/** El paso que la app espera segun el estado actual del flujo. */
+export function pasoEsperado(state: Pick<FlowState, "status" | "items">): PasoEsperado {
+  if (state.status === "idle") return "serie";
+  if (state.status === "kit") {
+    return state.items.length > 0 ? "item" : "serie";
+  }
+  if (state.status === "approved") return "gafete";
+  return "listo";
 }
 
 function blank(): FlowState {
@@ -56,6 +87,7 @@ function blank(): FlowState {
     message: "",
     error: "",
     historial: [],
+    aviso: null,
   };
 }
 
@@ -81,6 +113,23 @@ export function usePackoutFlow() {
     setState((s) => ({ ...s, message }));
     setTimeout(() => setState((s) => (s.message === message ? { ...s, message: "" } : s)), 4000);
   }, []);
+
+  const setAviso = useCallback((aviso: FlowNotice | null) => {
+    setState((s) => ({ ...s, aviso }));
+  }, []);
+
+  const clearAviso = useCallback(() => {
+    setState((s) => ({ ...s, aviso: null }));
+  }, []);
+
+  // El aviso se apaga solo para que el operador pueda seguir escaneando.
+  useEffect(() => {
+    if (!state.aviso) return;
+    const t = setTimeout(() => {
+      setState((s) => (s.aviso === state.aviso ? { ...s, aviso: null } : s));
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [state.aviso]);
 
   const logError = useCallback(async (msg: string) => {
     setState((s) => ({ ...s, error: msg }));
@@ -208,10 +257,24 @@ export function usePackoutFlow() {
       const idx = state.items.findIndex((it) => it.key === key);
       if (idx === -1) {
         setMessage(`"${key}" no está en la lista del kit`);
+        setAviso({
+          titulo: "Ese item no es del kit",
+          motivo: `"${key}" no aparece en la lista del equipo ${state.serie || ""}`.trim(),
+          esperado: "item",
+          recibido: key,
+          rejected: true,
+        });
         return;
       }
       if (state.items[idx].scanned) {
         setMessage(`"${key}" ya fue escaneado`);
+        setAviso({
+          titulo: "Item repetido",
+          motivo: `"${key}" ya se había escaneado. Faltan ${state.remaining} item(s).`,
+          esperado: "item",
+          recibido: key,
+          rejected: true,
+        });
         return;
       }
       const items = state.items.map((it, i) =>
@@ -219,13 +282,13 @@ export function usePackoutFlow() {
       );
       const remaining = Math.max(0, state.remaining - 1);
       if (remaining === 0) {
-        setState((s) => ({ ...s, items, remaining }));
+        setState((s) => ({ ...s, items, remaining, aviso: null }));
         approve();
       } else {
-        setState((s) => ({ ...s, items, remaining, message: `Faltan ${remaining}` }));
+        setState((s) => ({ ...s, items, remaining, message: `Faltan ${remaining}`, aviso: null }));
       }
     },
-    [state.items, state.remaining, setMessage, approve],
+    [state.items, state.remaining, state.serie, setMessage, setAviso, approve],
   );
 
   const feed = useCallback(
@@ -237,16 +300,48 @@ export function usePackoutFlow() {
         case "idle": {
           if (!looksLikeSerial(code)) {
             setMessage(`Serial inválido: ${code}`);
+            setAviso({
+              titulo: "Eso no es un número de serie",
+              motivo: `Escaneaste "${code}". Primero se escanea el número de serie del equipo.`,
+              esperado: "serie",
+              recibido: code,
+              rejected: true,
+            });
             return;
           }
+          setAviso(null);
           await loadKit(code);
           break;
         }
         case "kit": {
+          // Si parece otra serie, avisar en vez de tratarlo como item.
+          if (looksLikeSerial(code) && code !== state.serie) {
+            setMessage("Esa es otra serie, no un item");
+            setAviso({
+              titulo: "Esperaba un item",
+              motivo: `Escaneaste la serie "${code}", pero el kit abierto es ${state.serie}. Todavía faltan ${state.remaining} item(s).`,
+              esperado: "item",
+              recibido: code,
+              rejected: true,
+            });
+            break;
+          }
           scanItem(code);
           break;
         }
         case "approved": {
+          // Si escanea una serie o un item cuando ya toca el gafete, avisar.
+          if (looksLikeSerial(code)) {
+            setMessage("Esperaba el gafete, no una serie");
+            setAviso({
+              titulo: "Solo falta tu gafete",
+              motivo: `Escaneaste "${code}". El equipo ${state.serie} ya está completo: escanea tu gafete de colaborador.`,
+              esperado: "gafete",
+              recibido: code,
+              rejected: true,
+            });
+            break;
+          }
           const now = new Date().toLocaleString("es-MX");
           let op:
             | { found: boolean; operador: string }
@@ -259,6 +354,13 @@ export function usePackoutFlow() {
           }
           if (op && !op.found) {
             setMessage(`Colaborador no registrado: ${code}`);
+            setAviso({
+              titulo: "Colaborador no registrado",
+              motivo: `El gafete "${code}" no existe en la lista de colaboradores. Pide a Administración que lo registre.`,
+              esperado: "gafete",
+              recibido: code,
+              rejected: true,
+            });
             break;
           }
           const operador = code;
@@ -442,6 +544,7 @@ export function usePackoutFlow() {
     loginAdmin,
     reset,
     clearError,
+    clearAviso,
     refreshHistorial,
   };
 }

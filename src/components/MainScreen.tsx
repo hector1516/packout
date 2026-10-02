@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { usePackoutFlow, type FlowStatus } from "../hooks/usePackoutFlow";
+import { usePackoutFlow, type FlowStatus, type FlowNotice } from "../hooks/usePackoutFlow";
 import { useConfig } from "../hooks/useConfig";
 import { saveConfig } from "../lib/config";
 import { useItemImages } from "../hooks/useItemImages";
@@ -8,6 +8,8 @@ import { useRetention } from "../hooks/useRetention";
 import { useSounds } from "../hooks/useSounds";
 import { OperatorModal, PendingModal, ReprintModal, ImagesModal, BufferModal } from "./modals";
 import { Celebration } from "./Celebration";
+import { ThankYou } from "./ThankYou";
+import { FlowSteps, ScanNotice } from "./FlowSteps";
 
 type ModalKind = "none" | "login" | "manual" | "reprint" | "pending" | "images" | "buffer";
 
@@ -22,7 +24,7 @@ export function MainScreen({
 }: {
   onOpenSettings: () => void;
 }) {
-  const { state, feed, recordPending, recordManual, reprint, listRecientes, loginAdmin, reset, clearError } =
+  const { state, feed, recordPending, recordManual, reprint, listRecientes, loginAdmin, reset, clearError, clearAviso } =
     usePackoutFlow();
   const { config, set: setConfig } = useConfig();
   const { images, loading: imagesLoading, reload: reloadImages } = useItemImages(state.items);
@@ -37,29 +39,73 @@ export function MainScreen({
   const connOffline = !conn.sqlOnline || !conn.mapicsOnline;
   const pendingVisible = conn.pendingCount > 0;
   const [celebrate, setCelebrate] = useState(false);
+  const [gracias, setGracias] = useState(false);
+  const [avisoPrueba, setAvisoPrueba] = useState<FlowNotice | null>(null);
+  const [datosGracias, setDatosGracias] = useState({ operador: "", serie: "" });
+  const serieRef = useRef(state.serie);
+  serieRef.current = state.serie;
 
+  // Atajos de prueba: K = kit completo, G = agradecimiento de gafete.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === "K" || e.key === "k")) {
+      if (!(e.ctrlKey && e.shiftKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "k") {
         e.preventDefault();
         setCelebrate(true);
-        setTimeout(() => setCelebrate(false), 5200);
+        setTimeout(() => setCelebrate(false), 6000);
+      } else if (k === "g") {
+        e.preventDefault();
+        setDatosGracias({ operador: "1001", serie: serieRef.current || "MY12345" });
+        setGracias(true);
+        setTimeout(() => setGracias(false), 5000);
+      } else if (k === "w") {
+        e.preventDefault();
+        setAvisoPrueba({
+          titulo: "Ese item no es del kit",
+          motivo:
+            '"ZZZ-999" no aparece en la lista del equipo MY12345. Todavía faltan 3 item(s).',
+          esperado: "item",
+          recibido: "ZZZ-999",
+          rejected: true,
+        });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  useEffect(() => {
+    if (!avisoPrueba) return;
+    const t = setTimeout(() => setAvisoPrueba(null), 6000);
+    return () => clearTimeout(t);
+  }, [avisoPrueba]);
+
   const prevStatusRef = useRef(state.status);
   useEffect(() => {
     if (state.status === "approved" && prevStatusRef.current !== "approved") {
       setCelebrate(true);
       playSound("complete");
-      const t = setTimeout(() => setCelebrate(false), 5200);
+      const t = setTimeout(() => setCelebrate(false), 6000);
       return () => clearTimeout(t);
     }
     prevStatusRef.current = state.status;
   }, [state.status, playSound]);
+
+  // Agradecimiento cuando el gafete queda registrado (status -> done).
+  // Se copian los datos porque `usePackoutFlow` limpia el estado a los 2.5s
+  // y la animacion dura mas.
+  const prevDoneRef = useRef(state.status);
+  useEffect(() => {
+    const ahoraDone = state.status === "done" && state.operatorNo !== "";
+    if (ahoraDone && prevDoneRef.current !== "done") {
+      setDatosGracias({ operador: state.operatorNo, serie: state.serie });
+      setGracias(true);
+      const t = setTimeout(() => setGracias(false), 5000);
+      return () => clearTimeout(t);
+    }
+    prevDoneRef.current = state.status;
+  }, [state.status, state.operatorNo, state.serie]);
 
   useEffect(() => {
     if (state.error) playSound("error");
@@ -168,6 +214,8 @@ export function MainScreen({
         {state.message && <span className="muted"> · {state.message}</span>}
       </div>
 
+      <FlowSteps state={state} />
+
       {state.error && (
         <div className="error-banner">
           <span className="error-text">{state.error}</span>
@@ -272,7 +320,20 @@ export function MainScreen({
         </aside>
       </div>
 
-      {connOffline ? (
+      {conn.guard?.blocked ? (
+        <div className="conn-banner offline">
+          <strong>SQL EN PAUSA</strong>
+          <span className="conn-detail">
+            Se pausaron los intentos de conexión para no bloquear la cuenta de
+            SQL Server ({conn.guard.authFailures} intentos con usuario o contraseña
+            incorrectos). {conn.guard.blockReason}
+          </span>
+          <span className="conn-detail">
+            Ve a <strong>Ajustes → Conexión SQL</strong>, corrige usuario y contraseña,
+            y pulsa <strong>Reintentar ahora</strong>.
+          </span>
+        </div>
+      ) : connOffline ? (
         <div className="conn-banner offline">
           <strong>SIN CONEXIÓN</strong>
           <span className="conn-detail">
@@ -280,6 +341,12 @@ export function MainScreen({
             {conn.mapicsOnline ? "EN LÍNEA" : "OFFLINE"}
             {conn.pendingCount > 0 && ` · ${conn.pendingCount} pendientes`}
           </span>
+          {conn.guard && conn.guard.authFailures > 0 && (
+            <span className="conn-detail">
+              Fallos de autenticación: {conn.guard.authFailures}/
+              {conn.guard.maxAttempts}
+            </span>
+          )}
           {conn.pendingCount > 0 && (
             <button className="btn subtle" onClick={() => setModal("buffer")}>
               Ver buffer
@@ -380,6 +447,19 @@ export function MainScreen({
       )}
 
       <Celebration serie={state.serie} visible={celebrate} />
+      <ThankYou
+        operador={datosGracias.operador || "COLABORADOR"}
+        serie={datosGracias.serie}
+        visible={gracias}
+      />
+      {avisoPrueba ? (
+        <ScanNotice
+          state={{ ...state, aviso: avisoPrueba }}
+          onClose={() => setAvisoPrueba(null)}
+        />
+      ) : (
+        <ScanNotice state={state} onClose={clearAviso} />
+      )}
     </div>
   );
 }
