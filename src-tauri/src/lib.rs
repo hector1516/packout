@@ -1,5 +1,6 @@
 mod cache;
 mod config;
+mod guard;
 mod mapics;
 mod sql;
 #[cfg(desktop)]
@@ -192,6 +193,57 @@ fn set_active_zone(
     Ok(cfg)
 }
 
+/// Chequeo de disponibilidad SIN autenticacion.
+///
+/// Es lo que usa el polling cada 20s: solo abre el socket TCP del servidor,
+/// nunca envia un LOGIN7. Asi una contrasena incorrecta no genera ningun
+/// intento fallido contra SQL Server y la cuenta no se bloquea.
+#[tauri::command]
+async fn health_check(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let server = cfg.sql_for(Some(&zone)).server.clone();
+    let mapics_server = zone.mapics.server.clone();
+
+    let (sql_ping, mapics_ping) = tokio::join!(
+        run_blocking({
+            let server = server.clone();
+            move || sql::ping(&server)
+        }),
+        run_blocking(move || mapics::ping(&mapics_server)),
+    );
+    let st = sql::guard().snapshot();
+
+    Ok(json!({
+        "sql": match sql_ping {
+            Ok(s) => json!({"ok": true, "msg": s}),
+            Err(e) => json!({"ok": false, "msg": e}),
+        },
+        "mapics": match mapics_ping {
+            Ok(s) => json!({"ok": true, "msg": s}),
+            Err(e) => json!({"ok": false, "msg": e}),
+        },
+        "guard": st,
+    }))
+}
+
+/// Estado del circuito de proteccion de SQL (para mostrarlo en la UI).
+#[tauri::command]
+fn sql_guard_status() -> serde_json::Value {
+    json!(sql::guard().snapshot())
+}
+
+/// Reinicia el circuito: lo pulsa el operador despues de corregir
+/// usuario/contrasena. Hasta entonces NO se intenta ningun login mas.
+#[tauri::command]
+fn sql_guard_reset() -> serde_json::Value {
+    sql::guard().reset();
+    json!(sql::guard().snapshot())
+}
+
 #[tauri::command]
 async fn test_zone(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let cfg = load_config(&state)?;
@@ -233,6 +285,34 @@ fn restore_mapics_defaults(
     config::restore_default_queries(zone);
     config::save(&state.app_data_dir, &cfg)?;
     Ok(cfg)
+}
+
+/// Importa todas las imagenes de una carpeta.
+///
+/// `on_event` reporta el avance en vivo. El nombre del archivo (sin
+/// extension) es el codigo del item. Usa una sola conexion SQL para todo
+/// el lote, asi que 500 imagenes cuestan 1 solo login.
+#[tauri::command]
+async fn import_images_from_folder(
+    state: tauri::State<'_, AppState>,
+    folder: String,
+    recursive: Option<bool>,
+    overwrite: Option<bool>,
+    on_event: tauri::ipc::Channel<sql::ImportProgress>,
+) -> Result<sql::ImportSummary, String> {
+    let cfg = load_config(&state)?;
+    let zone = cfg
+        .active()
+        .ok_or_else(|| "No hay zona activa configurada".to_string())?
+        .clone();
+    let rec = recursive.unwrap_or(true);
+    let ow = overwrite.unwrap_or(false);
+    run_blocking(move || {
+        sql::importar_imagenes_carpeta(&cfg, &zone, &folder, rec, ow, |p| {
+            let _ = on_event.send(p.clone());
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -769,10 +849,14 @@ pub fn run() {
             import_config,
             set_active_zone,
             test_zone,
+            health_check,
+            sql_guard_status,
+            sql_guard_reset,
             mapics_test,
             restore_mapics_defaults,
             sql_scan_red,
             sql_list_databases,
+            import_images_from_folder,
             mapics_query_kit,
             mapics_insert_kit,
             mapics_delete_kit,

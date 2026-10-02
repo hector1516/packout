@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { save as dialogSave, open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { sqlCleanup } from "../lib/packout";
 import {
@@ -11,6 +11,9 @@ import {
   sqlListDatabases,
   mapicsTest,
   restoreMapicsDefaults,
+  sqlGuardStatus,
+  sqlGuardReset,
+  type GuardStatus,
   type MapicsTestResult,
   type AppConfig,
   type TestResult,
@@ -74,6 +77,11 @@ export function SettingsPanel({
   const [databases, setDatabases] = useState<string[]>([]);
   const [mapicsTesting, setMapicsTesting] = useState(false);
   const [mapicsRes, setMapicsRes] = useState<MapicsTestResult | null>(null);
+  const [guardStatus, setGuardStatus] = useState<GuardStatus | null>(null);
+
+  useEffect(() => {
+    sqlGuardStatus().then(setGuardStatus).catch(() => {});
+  }, []);
 
   if (loading) return <div className="center">Cargando configuración...</div>;
   if (!config) return <div className="center">Error: {error}</div>;
@@ -192,6 +200,7 @@ export function SettingsPanel({
     try {
       const res = await testZone();
       setTest(res);
+      sqlGuardStatus().then(setGuardStatus).catch(() => {});
       setStatus(
         `SQL: ${res.sql.ok ? "OK" : "FAIL"} · MAPICS: ${res.mapics.ok ? "OK" : "FAIL"}`,
       );
@@ -565,6 +574,35 @@ export function SettingsPanel({
               />
             </div>
             <h3>Buscar servidor en la red</h3>
+            <div className="guard-box">
+              <p className="muted">
+                Protección anti-bloqueo: como máximo{" "}
+                <strong>{guardStatus?.maxAttempts ?? 3}</strong> intentos de inicio de
+                sesión seguidos. Si fallan, la app deja de intentar para no bloquear
+                la cuenta de SQL Server. El estado se comprueba con ping, sin
+                autenticarse.
+              </p>
+              {guardStatus && (
+                <p className={guardStatus.blocked ? "error" : "ok"}>
+                  {guardStatus.blocked
+                    ? `PAUSADO — ${guardStatus.blockReason}`
+                    : `Normal · fallos de autenticación ${guardStatus.authFailures}/${guardStatus.maxAttempts} · fallos de red ${guardStatus.netFailures}`}
+                </p>
+              )}
+              {guardStatus?.blocked && (
+                <div className="modal-actions">
+                  <button
+                    className="btn primary"
+                    onClick={async () => {
+                      setGuardStatus(await sqlGuardReset());
+                      setStatus("Intentos reiniciados. Vuelve a probar la conexión.");
+                    }}
+                  >
+                    ♻️ Reintentar ahora
+                  </button>
+                </div>
+              )}
+            </div>
             <p className="muted">
               Escribe la IP (ej. 10.96.16.114) y busca equipos con SQL Server
               (puerto 1433) en esa red. Luego elige uno de la lista.
