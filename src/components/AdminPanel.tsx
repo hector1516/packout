@@ -15,6 +15,7 @@ import {
   sqlUpdateUsuario,
 } from "../lib/packout";
 import { useConfig } from "../hooks/useConfig";
+import { BulkImageImport } from "./BulkImageImport";
 
 type Tab = "reportes" | "fotos" | "usuarios" | "admins";
 
@@ -153,6 +154,7 @@ function FotosTab() {
 
   return (
     <div className="admin-section">
+      <BulkImageImport compact onDone={reload} />
       <div className="photo-admin-grid">
         <div className="photo-list">
           <h3>Items con foto ({items.length})</h3>

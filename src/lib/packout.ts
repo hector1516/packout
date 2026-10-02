@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 
 export type KitRow = Record<string, string>;
 
@@ -60,6 +60,47 @@ export interface ListItemImagesResult {
 
 export async function sqlListItemImages(): Promise<ListItemImagesResult> {
   return invoke<ListItemImagesResult>("sql_list_item_images");
+}
+
+export interface ImportProgress {
+  processed: number;
+  total: number;
+  saved: number;
+  failed: number;
+  skipped: number;
+  current: string;
+  pct: number;
+  elapsedMs: number;
+  etaMs: number | null;
+  speedPerSec: number;
+}
+
+export interface ImportSummary {
+  total: number;
+  saved: number;
+  failed: number;
+  skipped: number;
+  elapsedMs: number;
+  errores: string[];
+}
+
+/**
+ * Importa todas las imagenes de una carpeta. El nombre del archivo (sin
+ * extension) es el codigo del item. `onProgress` se llama en vivo.
+ */
+export async function importImagesFromFolder(
+  folder: string,
+  onProgress: (p: ImportProgress) => void,
+  opts?: { recursive?: boolean; overwrite?: boolean },
+): Promise<ImportSummary> {
+  const channel = new Channel<ImportProgress>();
+  channel.onmessage = onProgress;
+  return invoke<ImportSummary>("import_images_from_folder", {
+    folder,
+    recursive: opts?.recursive ?? true,
+    overwrite: opts?.overwrite ?? false,
+    onEvent: channel,
+  });
 }
 
 export async function sqlInsertResultado(params: {
