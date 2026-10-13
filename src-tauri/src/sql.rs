@@ -20,31 +20,103 @@ fn rt() -> &'static Runtime {
     RT.get_or_init(|| Runtime::new().expect("crear runtime tokio"))
 }
 
+/// Error de conexion con clasificacion. `auth=true` cuando el fallo es de
+/// credenciales (bloquea la cuenta si se martillea), `false` cuando es de
+/// red/TLS (inofensivo, se puede reintentar).
+pub struct SqlError {
+    pub msg: String,
+    pub auth: bool,
+}
+
+/// Codigos de SQL Server que indican fallo de login/credenciales.
+fn es_codigo_login(code: u32) -> bool {
+    matches!(
+        code,
+        18456 | // Login failed for user (contrasena mal, usuario inexistente)
+        18450 | 18451 | 18452 | // login fallo
+        18455 | // password caduco
+        18464 | // debe cambiar password
+        18465 | // login deshabilitado
+        18486 | 18487 | 18488 // cambio de password
+    )
+}
+
+fn classify(err: tiberius::error::Error, ctx: &str) -> SqlError {
+    // Detecta por CODIGO, no por texto: fiable y a prueba de localizacion.
+    let auth = matches!(&err, tiberius::error::Error::Server(t) if es_codigo_login(t.code()));
+    SqlError {
+        msg: format!("{}: {}", ctx, err),
+        auth,
+    }
+}
+
+/// Parsea "host", "host,puerto", "host:puerto". "host\\instancia" usa host.
+fn parse_server(server: &str) -> (String, u16) {
+    let s = server.trim();
+    let hostpart = s.split('\\').next().unwrap_or(s);
+    if let Some(idx) = hostpart.rfind(',') {
+        let port = hostpart[idx + 1..].trim().parse::<u16>().unwrap_or(1433);
+        (hostpart[..idx].trim().to_string(), port)
+    } else if let Some(idx) = hostpart.rfind(':') {
+        let port = hostpart[idx + 1..].trim().parse::<u16>().unwrap_or(1433);
+        (hostpart[..idx].trim().to_string(), port)
+    } else {
+        (hostpart.trim().to_string(), 1433)
+    }
+}
+
 fn config_from(db: &SqlDb) -> Result<Config, String> {
-    let cs = format!(
-        "Server={};Database={};User Id={};Password={}",
-        db.server, db.database, db.user, db.password
-    );
-    let mut config = Config::from_ado_string(&cs)
-        .map_err(|e| format!("Cadena de conexión SQL inválida: {}", e))?;
+    // Se construye programaticamente, NUNCA una cadena a mano: asi una
+    // contrasena con ';', '=' o espacios no rompe la conexion.
+    let (host, port) = parse_server(&db.server);
+    let mut config = Config::new();
+    config.host(host);
+    config.port(port);
+    config.database(&db.database);
+    config.authentication(tiberius::AuthMethod::sql_server(&db.user, &db.password));
+    config.application_name("Packout");
     config.encryption(tiberius::EncryptionLevel::Required);
     config.trust_cert();
     Ok(config)
 }
 
-async fn connect(db: &SqlDb) -> Result<Client<Compat<TcpStream>>, String> {
-    let config = config_from(db)?;
+/// Timeout corto: el fallo con credenciales malas se resuelve rapido y no
+/// deja sockets colgando en el servidor.
+const CONNECT_TIMEOUT: u64 = 5;
+
+async fn connect(db: &SqlDb) -> Result<Client<Compat<TcpStream>>, SqlError> {
+    let config = config_from(db).map_err(|e| SqlError { msg: e, auth: false })?;
     let addr = config.get_addr();
-    let timeout = std::time::Duration::from_secs(10);
-    let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr.as_str()))
-        .await
-        .map_err(|_| format!("Timeout conectando a {} (10s)", db.server))?
-        .map_err(|e| format!("No se pudo conectar a {}: {}", db.server, e))?;
-    let client = tokio::time::timeout(timeout, Client::connect(config, tcp.compat()))
-        .await
-        .map_err(|_| format!("Timeout de autenticación con {} (10s)", db.server))?
-        .map_err(|e| format!("Error de autenticación con {}: {}", db.server, e))?;
-    Ok(client)
+    let timeout = std::time::Duration::from_secs(CONNECT_TIMEOUT);
+    let tcp = match tokio::time::timeout(timeout, TcpStream::connect(addr.as_str())).await {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
+            return Err(SqlError {
+                msg: format!("No se pudo conectar a {}: {}", db.server, e),
+                auth: false,
+            })
+        }
+        Err(_) => {
+            return Err(SqlError {
+                msg: format!("Timeout conectando a {} ({}s)", db.server, CONNECT_TIMEOUT),
+                auth: false,
+            })
+        }
+    };
+    match tokio::time::timeout(timeout, Client::connect(config, tcp.compat())).await {
+        Ok(Ok(c)) => Ok(c),
+        Ok(Err(e)) => Err(classify(
+            e,
+            &format!("Error de autenticación con {}", db.server),
+        )),
+        Err(_) => Err(SqlError {
+            msg: format!(
+                "Timeout de autenticación con {} ({}s)",
+                db.server, CONNECT_TIMEOUT
+            ),
+            auth: false,
+        }),
+    }
 }
 
 /// Availability check SIN autenticacion: solo abre el socket TCP.
@@ -83,17 +155,17 @@ async fn cerrar(client: Client<Compat<TcpStream>>) {
 fn open(db: &SqlDb, sql: &str) -> Result<Vec<Value>, String> {
     guard().check()?;
     let res = open_raw(db, sql);
-    guard().record(&res.as_ref().map(|_| ()).map_err(|e| e.clone()));
-    res
+    let auth = res.as_ref().err().map(|e| e.auth).unwrap_or(false);
+    guard().record(&res.as_ref().map(|_| ()).map_err(|e| e.msg.clone()), auth);
+    res.map_err(|e| e.msg)
 }
 
-fn open_raw(db: &SqlDb, sql: &str) -> Result<Vec<Value>, String> {
+fn open_raw(db: &SqlDb, sql: &str) -> Result<Vec<Value>, SqlError> {
     rt().block_on(async {
-        let mut client = match connect(db).await {
-            Ok(c) => c,
-            Err(e) => return Err(e),
-        };
-        let rows = leer(&mut client, sql).await;
+        let mut client = connect(db).await?;
+        let rows = leer(&mut client, sql)
+            .await
+            .map_err(|e| SqlError { msg: e, auth: false });
         // `stream` ya no vive aqui, el client se puede cerrar.
         cerrar(client).await;
         rows
@@ -136,21 +208,19 @@ async fn leer(
 fn exec(db: &SqlDb, sql: &str) -> Result<(), String> {
     guard().check()?;
     let res = exec_raw(db, sql);
-    guard().record(&res);
-    res
+    let auth = res.as_ref().err().map(|e| e.auth).unwrap_or(false);
+    guard().record(&res.as_ref().map(|_| ()).map_err(|e| e.msg.clone()), auth);
+    res.map_err(|e| e.msg)
 }
 
-fn exec_raw(db: &SqlDb, sql: &str) -> Result<(), String> {
+fn exec_raw(db: &SqlDb, sql: &str) -> Result<(), SqlError> {
     rt().block_on(async {
-        let mut client = match connect(db).await {
-            Ok(c) => c,
-            Err(e) => return Err(e),
-        };
+        let mut client = connect(db).await?;
         let res = client
             .execute(sql, &[])
             .await
             .map(|_| ())
-            .map_err(|e| format!("Error ejecutando SQL: {}", e));
+            .map_err(|e| SqlError { msg: format!("Error ejecutando SQL: {}", e), auth: false });
         cerrar(client).await;
         res
     })
@@ -957,10 +1027,7 @@ where
     let db = cfg.sql_for(Some(zone));
 
     let resultado = rt().block_on(async {
-        let mut client = match connect(db).await {
-            Ok(c) => c,
-            Err(e) => return Err(e),
-        };
+        let mut client = connect(db).await?;
         let mut saved = 0usize;
         let mut failed = 0usize;
         let mut skipped = 0usize;
@@ -1011,15 +1078,15 @@ where
             match client.execute(&sql, &[]).await {
                 Ok(_) => saved += 1,
                 Err(e) => {
-                    let msg = format!("Error en {}: {}", nombre, e);
-                    if crate::guard::is_auth_error(&msg) {
+                    let err = classify(e, &format!("Error en {}", nombre));
+                    if err.auth {
                         // Falla de credenciales: aborta de inmediato, no seguimos
                         // acumulando intentos que bloqueen la cuenta.
-                        return Err(msg);
+                        return Err(err);
                     }
                     failed += 1;
                     if errores.len() < 50 {
-                        errores.push(msg);
+                        errores.push(err.msg);
                     }
                 }
             }
@@ -1059,12 +1126,12 @@ where
 
     match resultado {
         Ok(s) => {
-            guard().record(&Ok(()));
+            guard().record(&Ok(()), false);
             Ok(s)
         }
         Err(e) => {
-            guard().record(&Err(e.clone()));
-            Err(e)
+            guard().record(&Err(e.msg.clone()), e.auth);
+            Err(e.msg)
         }
     }
 }
@@ -1078,6 +1145,39 @@ mod tests {
         let appdata = std::env::var("APPDATA").expect("APPDATA");
         let dir = std::path::PathBuf::from(appdata).join("com.packout.app");
         config::load(&dir).expect("cargar config")
+    }
+
+    #[test]
+    fn detecta_codigos_de_login() {
+        assert!(es_codigo_login(18456));
+        assert!(es_codigo_login(18452));
+        assert!(es_codigo_login(18465));
+        assert!(!es_codigo_login(4060)); // no puede abrir la base de datos
+        assert!(!es_codigo_login(2601)); // duplicado
+        assert!(!es_codigo_login(0));
+    }
+
+    #[test]
+    fn parsea_el_servidor() {
+        assert_eq!(parse_server("10.96.16.114"), ("10.96.16.114".to_string(), 1433));
+        assert_eq!(parse_server("10.96.16.114,1435"), ("10.96.16.114".to_string(), 1435));
+        assert_eq!(parse_server("host:1234"), ("host".to_string(), 1234));
+        assert_eq!(parse_server("SRV\\INST"), ("SRV".to_string(), 1433));
+        assert_eq!(parse_server(" 10.1.2.3 "), ("10.1.2.3".to_string(), 1433));
+    }
+
+    #[test]
+    fn la_config_es_programatica() {
+        let db = SqlDb {
+            server: "10.96.16.114".into(),
+            database: "hussmann_insight".into(),
+            user: "HInsightUser".into(),
+            password: "abc;def=ghi".into(), // caracteres que rompen una cadena a mano
+            driver: "SQL Server".into(),
+        };
+        let cfg = config_from(&db).expect("config");
+        // No debe fallar por la contrasena con ';' y '='.
+        assert_eq!(cfg.get_addr(), "10.96.16.114:1433");
     }
 
     #[test]

@@ -98,7 +98,11 @@ impl Guard {
     }
 
     /// Registra el resultado de un intento real de autenticacion.
-    pub fn record(&self, res: &Result<(), String>) {
+    ///
+    /// `auth` indica si el fallo fue por credenciales (detectado por el codigo
+    /// de error 18456 en tiberius). Es la senal fiable: no depende de que el
+    /// mensaje contenga ciertas palabras.
+    pub fn record(&self, res: &Result<(), String>, auth: bool) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match res {
             Ok(()) => {
@@ -110,7 +114,8 @@ impl Guard {
             Err(e) => {
                 g.last_error = e.clone();
                 g.last_failed = true;
-                if is_auth_error(e) {
+                // auth (por codigo 18456) o fallback por texto del mensaje.
+                if auth || is_auth_error(e) {
                     g.auth_failures += 1;
                     g.net_failures = 0;
                     if g.auth_failures >= MAX_ATTEMPTS && !g.blocked {
@@ -187,7 +192,7 @@ mod tests {
         let err = Err(AUTH_ERR.to_string());
         for i in 1..=MAX_ATTEMPTS {
             g.check().expect("debe pasar antes de bloquear");
-            g.record(&err);
+            g.record(&err, true);
             if i < MAX_ATTEMPTS {
                 assert!(!g.snapshot().blocked, "no debe bloquear en el intento {}", i);
             }
@@ -204,9 +209,9 @@ mod tests {
         let g = Guard::default();
         dormir((MIN_INTERVAL.as_millis() as u64) + 20);
         g.check().ok();
-        g.record(&Err(AUTH_ERR.to_string()));
+        g.record(&Err(AUTH_ERR.to_string()), true);
         dormir((MIN_INTERVAL.as_millis() as u64) + 20);
-        g.record(&Ok(()));
+        g.record(&Ok(()), false);
         assert_eq!(g.snapshot().auth_failures, 0);
         assert!(!g.snapshot().blocked);
     }
@@ -216,7 +221,7 @@ mod tests {
         let g = Guard::default();
         for _ in 0..6 {
             if g.check().is_ok() {
-                g.record(&Err(NET_ERR.to_string()));
+                g.record(&Err(NET_ERR.to_string()), false);
                 dormir((MIN_INTERVAL.as_millis() as u64) + 20);
             }
         }
@@ -232,10 +237,10 @@ mod tests {
         // verificar tablas e imagenes por item hacen rafagas legitimas.
         for _ in 0..20 {
             assert!(g.check().is_ok(), "rafaga con exito no debe frenarse");
-            g.record(&Ok(()));
+            g.record(&Ok(()), false);
         }
         // Tras un fallo, el siguiente intento inmediato se frena.
-        g.record(&Err(AUTH_ERR.to_string()));
+        g.record(&Err(AUTH_ERR.to_string()), true);
         let e = g.check().unwrap_err();
         assert!(e.contains("Espera"));
     }
@@ -246,7 +251,7 @@ mod tests {
         let g = Guard::default();
         for i in 0..MAX_ATTEMPTS {
             g.check().unwrap_or_else(|e| panic!("intento {} rechazado: {}", i + 1, e));
-            g.record(&Err(AUTH_ERR.to_string()));
+            g.record(&Err(AUTH_ERR.to_string()), true);
             dormir((MIN_INTERVAL.as_millis() as u64) + 20);
         }
         assert!(g.snapshot().blocked);
