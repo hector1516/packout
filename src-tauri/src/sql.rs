@@ -172,6 +172,70 @@ fn open_raw(db: &SqlDb, sql: &str) -> Result<Vec<Value>, SqlError> {
     })
 }
 
+/// Lee una columna como texto segun su tipo, SIN paniquear.
+///
+/// `Row::get` internamente hace `.unwrap()` y revienta cuando la columna es
+/// numerica (p.ej. `SELECT 1`). Aqui se usa `try_get` por tipo, con fallback
+/// a `None` para lo que no se pueda interpretar.
+fn valor_como_texto(
+    row: &tiberius::Row,
+    idx: usize,
+    ct: tiberius::ColumnType,
+) -> Option<String> {
+    use tiberius::ColumnType as CT;
+    macro_rules! num {
+        ($t:ty) => {
+            row.try_get::<$t, _>(idx).ok().flatten().map(|v| v.to_string())
+        };
+    }
+    match ct {
+        CT::Null => None,
+        CT::Bit | CT::Bitn => {
+            row.try_get::<bool, _>(idx)
+                .ok()
+                .flatten()
+                .map(|b| if b { "1".to_string() } else { "0".to_string() })
+        }
+        CT::Int1 => num!(u8),
+        CT::Int2 => num!(i16),
+        CT::Int4 | CT::Intn => num!(i32),
+        CT::Int8 => num!(i64),
+        CT::Float4 => num!(f32),
+        CT::Float8 | CT::Floatn => num!(f64),
+        CT::Guid => row
+            .try_get::<tiberius::Uuid, _>(idx)
+            .ok()
+            .flatten()
+            .map(|v| v.to_string()),
+        CT::Datetime4 | CT::Datetime | CT::Datetimen | CT::Datetime2 => row
+            .try_get::<chrono::NaiveDateTime, _>(idx)
+            .ok()
+            .flatten()
+            .map(|v| v.to_string()),
+        CT::Daten => row
+            .try_get::<chrono::NaiveDate, _>(idx)
+            .ok()
+            .flatten()
+            .map(|v| v.to_string()),
+        CT::Timen => row
+            .try_get::<chrono::NaiveTime, _>(idx)
+            .ok()
+            .flatten()
+            .map(|v| v.to_string()),
+        CT::DatetimeOffsetn => row
+            .try_get::<chrono::DateTime<chrono::FixedOffset>, _>(idx)
+            .ok()
+            .flatten()
+            .map(|v| v.to_string()),
+        // Textos y el resto (varchar, nvarchar, xml, money sin bigdecimal...)
+        _ => row
+            .try_get::<&str, _>(idx)
+            .ok()
+            .flatten()
+            .map(|s| s.to_string()),
+    }
+}
+
 async fn leer(
     client: &mut Client<Compat<TcpStream>>,
     sql: &str,
@@ -180,14 +244,13 @@ async fn leer(
         .query(sql, &[])
         .await
         .map_err(|e| format!("Error en consulta: {}", e))?;
-    let names: Vec<String> = stream
+    let cols: &[tiberius::Column] = stream
         .columns()
         .await
         .map_err(|e| format!("Error en columnas: {}", e))?
-        .unwrap_or_default()
-        .iter()
-        .map(|c| c.name().to_string())
-        .collect();
+        .unwrap_or_default();
+    let names: Vec<String> = cols.iter().map(|c| c.name().to_string()).collect();
+    let types: Vec<tiberius::ColumnType> = cols.iter().map(|c| c.column_type()).collect();
     let mut rows = Vec::new();
     while let Some(item) = stream.next().await {
         let item = item.map_err(|e| format!("Error leyendo filas: {}", e))?;
@@ -197,7 +260,7 @@ async fn leer(
         };
         let mut obj = serde_json::Map::new();
         for (i, name) in names.iter().enumerate() {
-            let val: Option<&str> = row.get(i);
+            let val = valor_como_texto(&row, i, types[i]);
             obj.insert(name.clone(), json!(val.unwrap_or_default()));
         }
         rows.push(Value::Object(obj));
