@@ -165,14 +165,14 @@ export function usePackoutFlow() {
           setState((s) => ({ ...s, serie: "N/A", message: "Sin items en MAPICS para " + serie }));
           return;
         }
-        const { items, count } = buildItems(res.rows);
+        const { items } = buildItems(res.rows);
         const pedido = res.rows[0]?.["IMAORDE"] ?? "";
         setState((s) => ({
           ...s,
           status: "kit",
           pedido,
           items,
-          remaining: count,
+          remaining: items.length,
           resultado: "PENDIENTE",
           message: `Kit cargado: ${items.length} items`,
           error: "",
@@ -314,7 +314,16 @@ export function usePackoutFlow() {
           break;
         }
         case "kit": {
-          // Si parece otra serie, avisar en vez de tratarlo como item.
+          // Si el código corresponde a un item del kit actual, escanearlo.
+          // (Los items comparten el serial base + sufijo, por eso
+          //  looksLikeSerial() los confundía con seriales: se verifica
+          //  la lista de items primero.)
+          const esItemDelKit = state.items.some((it) => it.key === code);
+          if (esItemDelKit) {
+            scanItem(code);
+            break;
+          }
+          // Si parece otra serie distinta, avisar en vez de tratarlo como item.
           if (looksLikeSerial(code) && code !== state.serie) {
             setMessage("Esa es otra serie, no un item");
             setAviso({
