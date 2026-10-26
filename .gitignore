@@ -31,3 +31,9 @@ HussmannPackout_imx/.vs/
 *.user
 !HussmannPackout_imx/*.sln
 !HussmannPackout_imx/*.vbproj
+
+# Configuracion con credenciales (NUNCA subir)
+packout.config.json
+*.key
+*.pem
+*.p12
