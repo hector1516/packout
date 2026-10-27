@@ -242,6 +242,11 @@ export function MainScreen({
                 <span className="kit-counter-label">restantes</span>
               </div>
             )}
+            {!idle && (
+              <button className="btn subtle" onClick={reset} title="Borrar datos actuales y empezar de nuevo">
+                Reiniciar
+              </button>
+            )}
           </div>
 
           {idle ? (
@@ -302,9 +307,9 @@ export function MainScreen({
           <tbody>
             {state.historial.map((r, i) => (
               <tr key={i}>
-                <td>{r["SERIE"] ?? r["serie"] ?? "—"}</td>
-                <td>{r["RESULTADO"] ?? r["resultado"] ?? "—"}</td>
-                <td>{r["OPERADOR"] ?? r["operador"] ?? "—"}</td>
+                <td>{r["Serie"] ?? r["SERIE"] ?? r["serie"] ?? "—"}</td>
+                <td>{r["Resultado"] ?? r["RESULTADO"] ?? r["resultado"] ?? "—"}</td>
+                <td>{r["Operador"] ?? r["OPERADOR"] ?? r["operador"] ?? "—"}</td>
               </tr>
             ))}
             {state.historial.length === 0 && (

@@ -255,6 +255,11 @@ export async function sqlDeleteAdmin(no: string): Promise<void> { return invoke(
 export const KIT_SERIE_PREFIXES = ["MY", "my"];
 export const OPEN_PAREN = "(";
 
+export function formatFecha(d: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 export function normalizeScan(raw: string): string {
   return raw.replace(/[()]/g, "").trim().toUpperCase();
 }

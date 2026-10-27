@@ -7,6 +7,7 @@ import {
   cacheRemoveOp,
   cacheSaveKit,
   cacheUpsertOp,
+  formatFecha,
   looksLikeSerial,
   mapicsInsertKit,
   mapicsPrecache,
@@ -62,6 +63,12 @@ export interface FlowState {
   error: string;
   historial: KitRow[];
   aviso: FlowNotice | null;
+  /** La serie ya fue aprobada anteriormente: no duplicar insert. */
+  yaAprobada: boolean;
+  /** Fecha/hora del ultimo escaneo aprobado (si yaAprobada). */
+  ultimaFecha: string;
+  /** Operador del ultimo escaneo aprobado (si yaAprobada). */
+  ultimoOperador: string;
 }
 
 /** El paso que la app espera segun el estado actual del flujo. */
@@ -88,6 +95,9 @@ function blank(): FlowState {
     error: "",
     historial: [],
     aviso: null,
+    yaAprobada: false,
+    ultimaFecha: "",
+    ultimoOperador: "",
   };
 }
 
@@ -144,9 +154,16 @@ export function usePackoutFlow() {
     async (serie: string) => {
       setState((s) => ({ ...s, serie, resultado: "PENDIENTE", message: "Consultando MAPICS..." }));
       let already = false;
+      let ultimaFecha = "";
+      let ultimoOperador = "";
       try {
         const check = await sqlCheckSerieAprobada(serie);
         already = check.found;
+        if (already && check.rows && check.rows.length > 0) {
+          const r = check.rows[0];
+          ultimaFecha = r["FechaHora"] ?? r["fechaHora"] ?? r["fechahora"] ?? "";
+          ultimoOperador = r["Operador"] ?? r["operador"] ?? "";
+        }
       } catch {
         try {
           already = await cacheIsProcesada(serie);
@@ -154,9 +171,20 @@ export function usePackoutFlow() {
           already = false;
         }
       }
+      // Si ya fue aprobada, se avisa (con fecha/hora) pero se permite
+      // cargar el kit para volver a verlo; el registro NO se duplica.
       if (already) {
-        setState((s) => ({ ...s, serie: "N/A", message: `La serie ${serie} ya fue aprobada` }));
-        return;
+        const detalle = ultimaFecha
+          ? ` (ultima vez: ${ultimaFecha}${ultimoOperador ? " por " + ultimoOperador : ""})`
+          : "";
+        setMessage(`La serie ${serie} ya fue aprobada${detalle}. No se duplicara el registro.`);
+        setAviso({
+          titulo: "Serie ya escaneada",
+          motivo: `La serie ${serie} ya fue aprobada anteriormente${detalle}. No se duplicara el registro en SQL/MAPICS.`,
+          esperado: "serie",
+          recibido: serie,
+          rejected: false,
+        });
       }
 
       try {
@@ -176,6 +204,9 @@ export function usePackoutFlow() {
           resultado: "PENDIENTE",
           message: `Kit cargado: ${items.length} items`,
           error: "",
+          yaAprobada: already,
+          ultimaFecha,
+          ultimoOperador,
         }));
         const cached: CachedItem[] = items.map((it) => ({
           key: it.key,
@@ -211,6 +242,9 @@ export function usePackoutFlow() {
             resultado: "PENDIENTE",
             message: `Kit cargado offline: ${items.length} items`,
             error: "",
+            yaAprobada: already,
+            ultimaFecha,
+            ultimoOperador,
           }));
         } catch {
           logError(`Error en mapics_query_kit: ${onlineErr}`);
@@ -222,35 +256,41 @@ export function usePackoutFlow() {
   );
 
   const approve = useCallback(async () => {
-    const now = new Date().toLocaleString("es-MX");
-    mapicsOkRef.current = false;
-    try {
-      await mapicsInsertKit(state.serie);
-      mapicsOkRef.current = true;
-    } catch (e) {
-      const op: PendingOp = {
-        tipo: "aprobado",
-        serie: state.serie,
-        pedido: state.pedido,
-        resultado: "APROBADO",
-        operador: "",
-        operadorAdmin: state.operatorAdmin,
-        comentario: "",
-        fecha: now,
-        mapicsOk: false,
-        sqlOk: false,
-      };
-      cacheUpsertOp(op).catch(() => {});
+    const now = formatFecha();
+    mapicsOkRef.current = true;
+    // Si la serie ya estaba aprobada, no re-insertar en MAPICS.
+    if (!state.yaAprobada) {
+      mapicsOkRef.current = false;
+      try {
+        await mapicsInsertKit(state.serie);
+        mapicsOkRef.current = true;
+      } catch (e) {
+        const op: PendingOp = {
+          tipo: "aprobado",
+          serie: state.serie,
+          pedido: state.pedido,
+          resultado: "APROBADO",
+          operador: "",
+          operadorAdmin: state.operatorAdmin,
+          comentario: "",
+          fecha: now,
+          mapicsOk: false,
+          sqlOk: false,
+        };
+        cacheUpsertOp(op).catch(() => {});
+      }
     }
     cacheMarkProcesada(state.serie).catch(() => {});
     setState((s) => ({
       ...s,
       status: "approved",
       resultado: "APROBADO",
-      message: "APROBADO — escanea tu gafete para registrar",
+      message: state.yaAprobada
+        ? `Ya estaba aprobada (${state.ultimaFecha}) — escanea tu gafete para registrar (no se duplicara)`
+        : "APROBADO — escanea tu gafete para registrar",
       error: "",
     }));
-  }, [state.serie, state.pedido, state.operatorAdmin]);
+  }, [state.serie, state.pedido, state.operatorAdmin, state.yaAprobada, state.ultimaFecha]);
 
   const scanItem = useCallback(
     (key: string) => {
@@ -351,7 +391,7 @@ export function usePackoutFlow() {
             });
             break;
           }
-          const now = new Date().toLocaleString("es-MX");
+          const now = formatFecha();
           let op:
             | { found: boolean; operador: string }
             | undefined;
@@ -375,33 +415,47 @@ export function usePackoutFlow() {
             });
           }
           const operador = code;
-          try {
-            await sqlInsertResultado({
-              pedido: state.pedido,
-              serie: state.serie,
-              resultado: "APROBADO",
-              operador,
-              operadorAdmin: state.operatorAdmin,
-              comentario: "",
+          if (state.yaAprobada) {
+            // No duplicar el registro: ya estaba aprobada.
+            setMessage(`Ya estaba aprobada (${state.ultimaFecha}) — no se duplico el registro.`);
+            setAviso({
+              titulo: "Serie ya aprobada",
+              motivo: `Esta serie ya fue aprobada${state.ultimaFecha ? " el " + state.ultimaFecha : ""}${state.ultimoOperador ? " por " + state.ultimoOperador : ""}. No se duplico el registro.`,
+              esperado: "gafete",
+              recibido: code,
+              rejected: false,
             });
-            cacheRemoveOp(state.serie).catch(() => {});
-          } catch {
-            const mapicsOk = mapicsOkRef.current;
-            const pending: PendingOp = {
-              tipo: "aprobado",
-              serie: state.serie,
-              pedido: state.pedido,
-              resultado: "APROBADO",
-              operador,
-              operadorAdmin: state.operatorAdmin,
-              comentario: "",
-              fecha: now,
-              mapicsOk,
-              sqlOk: false,
-            };
-            cacheUpsertOp(pending).catch(() => {});
+          } else {
+            try {
+              await sqlInsertResultado({
+                pedido: state.pedido,
+                serie: state.serie,
+                resultado: "APROBADO",
+                operador,
+                operadorAdmin: state.operatorAdmin,
+                comentario: "",
+              });
+              cacheRemoveOp(state.serie).catch(() => {});
+            } catch (e) {
+              const mapicsOk = mapicsOkRef.current;
+              logError(`Error registrando resultado SQL: ${e}`);
+              setMessage("Registrado offline (pendiente de sincronizar)");
+              const pending: PendingOp = {
+                tipo: "aprobado",
+                serie: state.serie,
+                pedido: state.pedido,
+                resultado: "APROBADO",
+                operador,
+                operadorAdmin: state.operatorAdmin,
+                comentario: "",
+                fecha: now,
+                mapicsOk,
+                sqlOk: false,
+              };
+              cacheUpsertOp(pending).catch(() => {});
+            }
           }
-          setState((s) => ({ ...s, operatorNo: operador, status: "done", message: "Registrado. Listo para el siguiente." }));
+          setState((s) => ({ ...s, operatorNo: operador, status: "done", message: state.yaAprobada ? "Ya estaba aprobada, no se duplico." : "Registrado. Listo para el siguiente." }));
           refreshHistorial();
           setTimeout(() => setState(blank()), 2500);
           break;
@@ -417,7 +471,7 @@ export function usePackoutFlow() {
     async (admin: string, comentario: string) => {
       if (!state.serie) return;
       const faltantes = state.items.filter((i) => !i.scanned).map((i) => i.key);
-      const now = new Date().toLocaleString("es-MX");
+      const now = formatFecha();
       try {
         await sqlInsertResultado({
           pedido: state.pedido,
@@ -427,7 +481,8 @@ export function usePackoutFlow() {
           operadorAdmin: admin,
           comentario: `${comentario} items: ${faltantes.join(", ")}`,
         });
-      } catch {
+      } catch (e) {
+        logError(`Error registrando pendiente: ${e}`);
         const pending: PendingOp = {
           tipo: "pendiente",
           serie: state.serie,
@@ -456,7 +511,7 @@ export function usePackoutFlow() {
         setMessage(`Serial inválido: ${serie}`);
         return;
       }
-      const now = new Date().toLocaleString("es-MX");
+      const now = formatFecha();
       try {
         await sqlInsertResultado({
           pedido: "",
