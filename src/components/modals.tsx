@@ -433,7 +433,7 @@ export function TablesModal({
   }, []);
 
   return (
-    <Modal title="Verificar tablas SQL" onClose={onClose}>
+    <Modal title="Verificar tablas y vistas SQL" onClose={onClose}>
       <div className="tables-check">
         <p className="muted">
           Escanea la base de datos para verificar que existan las tablas con sus campos

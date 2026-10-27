@@ -829,7 +829,17 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .map_err(|e| format!("No se pudo obtener config dir: {}", e))?;
-            let _ = config::load(&app_data_dir);
+            // Best-effort: asegurar que existan tablas y vistas (incluida la
+            // vista de recientes) al arrancar, sin bloquear el inicio.
+            if let Ok(cfg) = config::load(&app_data_dir) {
+                if let Some(zone) = cfg.active() {
+                    let cfg = cfg.clone();
+                    let zone = zone.clone();
+                    std::thread::spawn(move || {
+                        let _ = sql::crear_tablas_faltantes(&cfg, &zone);
+                    });
+                }
+            }
             let host = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "desconocido".into());
             write_local_log(&app_data_dir, &format!("inicio de la app en: PC {}", host));
             app.manage(AppState { app_data_dir });

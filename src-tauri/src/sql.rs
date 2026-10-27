@@ -616,11 +616,15 @@ pub fn verificar_tablas(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>, Stri
     let mut out = Vec::new();
     for (table, cols, is_view, _src) in expected_columns(zone) {
         let exists = if is_view {
-            view_exists(db, &table)?
+            view_exists(db, &table).unwrap_or(false)
         } else {
-            table_exists(db, &table)?
+            table_exists(db, &table).unwrap_or(false)
         };
-        let existing = if exists { list_table_columns(db, &table)? } else { Vec::new() };
+        let existing = if exists {
+            list_table_columns(db, &table).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let missing: Vec<String> = cols
             .iter()
             .filter(|(name, _)| !existing.iter().any(|c| c.eq_ignore_ascii_case(name)))
@@ -642,48 +646,77 @@ pub fn crear_tablas_faltantes(cfg: &AppConfig, zone: &Zone) -> Result<Vec<Value>
     let db = cfg.sql_for(Some(zone));
     let mut out = Vec::new();
     for (table, cols, is_view, src) in expected_columns(zone) {
+        // Si es una vista, verificar que su tabla base exista primero.
+        if is_view && !table_exists(db, &zone.tables.resultados).unwrap_or(false) {
+            out.push(json!({
+                "table": table,
+                "exists": false,
+                "isView": is_view,
+                "columns": [],
+                "missing": cols.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                "ok": false,
+                "error": "La tabla base (resultados) no existe; creala primero.",
+            }));
+            continue;
+        }
         let exists = if is_view {
-            view_exists(db, &table)?
+            view_exists(db, &table).unwrap_or(false)
         } else {
-            table_exists(db, &table)?
+            table_exists(db, &table).unwrap_or(false)
         };
+        let mut err_msg = String::new();
         if !exists {
             if is_view {
-                create_view(db, &src)?;
-            } else {
-                create_table(db, &table, &cols)?;
+                if let Err(e) = create_view(db, &src) {
+                    err_msg = e;
+                }
+            } else if let Err(e) = create_table(db, &table, &cols) {
+                err_msg = e;
             }
         } else if is_view {
-            let existing = list_table_columns(db, &table)?;
+            let existing = list_table_columns(db, &table).unwrap_or_default();
             let missing: Vec<String> = cols
                 .iter()
                 .filter(|(name, _)| !existing.iter().any(|c| c.eq_ignore_ascii_case(name)))
                 .map(|(name, _)| name.clone())
                 .collect();
             if !missing.is_empty() {
-                create_view(db, &src)?;
+                if let Err(e) = create_view(db, &src) {
+                    err_msg = e;
+                }
             }
         } else {
-            add_missing_columns(db, &table, &cols)?;
+            if let Err(e) = add_missing_columns(db, &table, &cols) {
+                err_msg = e;
+            }
         }
         let existing = if is_view {
-            if exists { list_table_columns(db, &table)? } else { Vec::new() }
+            if exists || err_msg.is_empty() {
+                list_table_columns(db, &table).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
         } else {
-            list_table_columns(db, &table)?
+            list_table_columns(db, &table).unwrap_or_default()
         };
         let missing: Vec<String> = cols
             .iter()
             .filter(|(name, _)| !existing.iter().any(|c| c.eq_ignore_ascii_case(name)))
             .map(|(name, _)| name.clone())
             .collect();
-        out.push(json!({
+        let ok = err_msg.is_empty() && missing.is_empty();
+        let mut entry = json!({
             "table": table,
-            "exists": true,
+            "exists": exists || err_msg.is_empty(),
             "isView": is_view,
             "columns": existing,
             "missing": missing,
-            "ok": missing.is_empty(),
-        }));
+            "ok": ok,
+        });
+        if !err_msg.is_empty() {
+            entry["error"] = json!(err_msg);
+        }
+        out.push(entry);
     }
     Ok(out)
 }
