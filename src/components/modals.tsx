@@ -469,6 +469,11 @@ export function TablesModal({
                   ) : (
                     "—"
                   )}
+                  {t.error && (
+                    <div className="error-text" style={{ marginTop: 4, fontSize: 12 }}>
+                      {t.error}
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}

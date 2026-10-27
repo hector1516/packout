@@ -591,7 +591,28 @@ pub fn create_table(db: &SqlDb, table: &str, columns: &[(String, String)]) -> Re
 }
 
 pub fn create_view(db: &SqlDb, source: &str) -> Result<(), String> {
-    exec(db, source)
+    // 1) CREATE OR ALTER (SQL Server 2016+): crea o altera en un solo paso.
+    match exec(db, source) {
+        Ok(()) => return Ok(()),
+        Err(e1) => {
+            // 2) Servidores antiguos: intentar CREATE VIEW.
+            let create_src = source.replacen("CREATE OR ALTER VIEW", "CREATE VIEW", 1);
+            if create_src != source {
+                if exec(db, &create_src).is_ok() {
+                    return Ok(());
+                }
+            }
+            // 3) Si ya existia, intentar ALTER VIEW.
+            let alter_src = source.replacen("CREATE OR ALTER VIEW", "ALTER VIEW", 1);
+            if alter_src != source {
+                if exec(db, &alter_src).is_ok() {
+                    return Ok(());
+                }
+            }
+            // 4) Ultimo recurso: devolver el error original para diagnostico.
+            Err(e1)
+        }
+    }
 }
 
 pub fn add_missing_columns(

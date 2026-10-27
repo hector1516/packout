@@ -226,6 +226,7 @@ export interface TableCheck {
   columns: string[];
   missing: string[];
   ok: boolean;
+  error?: string;
 }
 
 export async function sqlCheckTables(): Promise<{ tables: TableCheck[] }> {
