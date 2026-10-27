@@ -591,44 +591,47 @@ pub fn create_table(db: &SqlDb, table: &str, columns: &[(String, String)]) -> Re
 }
 
 pub fn create_view(db: &SqlDb, source: &str) -> Result<(), String> {
-    // Extraer el nombre de la vista del source: "CREATE OR ALTER VIEW <name> AS ..."
-    let view_name = source
-        .split_whitespace()
-        .nth(4) // CREATE(0) OR(1) ALTER(2) VIEW(3) <name>(4)
-        .unwrap_or("")
-        .to_string();
-    // Si el servidor no soporta CREATE OR ALTER (SQL Server < 2016), usar
-    // CREATE VIEW / ALTER VIEW segun existencia.
-    let exists = if !view_name.is_empty() {
-        view_exists(db, &view_name).unwrap_or(false)
-    } else {
-        false
-    };
-    if exists {
-        let alter_src = source.replacen("CREATE OR ALTER VIEW", "ALTER VIEW", 1);
-        match exec(db, &alter_src) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                // Si ALTER falla, intentar CREATE OR ALTER por si acaso.
-                if exec(db, source).is_ok() {
-                    return Ok(());
-                }
-                return Err(e);
-            }
+    // CREATE VIEW/ALTER VIEW no se pueden ejecutar via sp_executesql
+    // (parametrizado) en SQL Server: deben ir como sentencia directa
+    // (simple_query). Por eso usamos simple_query.
+    let create_src = source.replacen("CREATE OR ALTER VIEW", "CREATE VIEW", 1);
+    let alter_src = source.replacen("CREATE OR ALTER VIEW", "ALTER VIEW", 1);
+    rt().block_on(async {
+        let mut client = connect(db).await.map_err(|e| e.msg)?;
+        // 1) Intentar CREATE VIEW (funciona si no existe).
+        let r = run_simple(&mut client, &create_src).await;
+        if r.is_ok() {
+            cerrar(client).await;
+            return Ok(());
         }
-    } else {
-        let create_src = source.replacen("CREATE OR ALTER VIEW", "CREATE VIEW", 1);
-        match exec(db, &create_src) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                // Intentar CREATE OR ALTER por si el servidor lo soporta.
-                if exec(db, source).is_ok() {
-                    return Ok(());
-                }
-                return Err(e);
-            }
+        let err_create = r.unwrap_err();
+        // 2) Si ya existia, intentar ALTER VIEW.
+        if run_simple(&mut client, &alter_src).await.is_ok() {
+            cerrar(client).await;
+            return Ok(());
         }
+        // 3) Intentar CREATE OR ALTER (SQL Server 2016+) por si acaso.
+        if run_simple(&mut client, source).await.is_ok() {
+            cerrar(client).await;
+            return Ok(());
+        }
+        cerrar(client).await;
+        Err(err_create)
+    })
+}
+
+async fn run_simple(
+    client: &mut Client<Compat<TcpStream>>,
+    sql: &str,
+) -> Result<(), String> {
+    let mut stream = client
+        .simple_query(sql)
+        .await
+        .map_err(|e| format!("Error ejecutando SQL: {}", e))?;
+    while let Some(item) = stream.next().await {
+        let _ = item.map_err(|e| format!("Error leyendo resultado: {}", e))?;
     }
+    Ok(())
 }
 
 pub fn add_missing_columns(
