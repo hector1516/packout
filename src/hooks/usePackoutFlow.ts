@@ -361,16 +361,18 @@ export function usePackoutFlow() {
           } catch {
             op = { found: true, operador: code };
           }
+          // El registro del colaborador NO bloquea el avance: si el gafete
+          // no esta en la lista, se permite continuar y se avisa (no se
+          // rechaza el escaneo). La validacion estricta solo aplica a admins.
           if (op && !op.found) {
-            setMessage(`Colaborador no registrado: ${code}`);
+            setMessage(`Colaborador no registrado: ${code} (se registra igual)`);
             setAviso({
               titulo: "Colaborador no registrado",
-              motivo: `El gafete "${code}" no existe en la lista de colaboradores. Pide a Administración que lo registre.`,
+              motivo: `El gafete "${code}" no existe en la lista de colaboradores. Se registra el resultado igual; pide a Administracion que lo registre.`,
               esperado: "gafete",
               recibido: code,
-              rejected: true,
+              rejected: false,
             });
-            break;
           }
           const operador = code;
           try {
