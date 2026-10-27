@@ -160,7 +160,7 @@ export function ReprintModal({
     listRecientes(20)
       .then((rows) => {
         setSeries(rows);
-        if (rows.length > 0) setSerie(rows[0]["SERIE"] ?? rows[0]["serie"] ?? "");
+        if (rows.length > 0) setSerie(rows[0]["Serie"] ?? rows[0]["SERIE"] ?? rows[0]["serie"] ?? "");
       })
       .catch(() => setMsg("No se pudieron cargar las series recientes"));
   }, [listRecientes]);
@@ -177,8 +177,8 @@ export function ReprintModal({
       <Field label="Últimas series aprobadas">
         <select value={serie} onChange={(e) => setSerie(e.target.value)}>
           {series.map((r, i) => (
-            <option key={i} value={r["SERIE"] ?? r["serie"] ?? ""}>
-              {r["SERIE"] ?? r["serie"] ?? "—"}
+            <option key={i} value={r["Serie"] ?? r["SERIE"] ?? r["serie"] ?? ""}>
+              {r["Serie"] ?? r["SERIE"] ?? r["serie"] ?? "—"}
             </option>
           ))}
         </select>
