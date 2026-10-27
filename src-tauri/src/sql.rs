@@ -372,11 +372,24 @@ pub fn consultar_historial(cfg: &AppConfig, zone: &Zone, top: i64) -> Result<Vec
 
 pub fn consultar_recientes(cfg: &AppConfig, zone: &Zone, top: i64) -> Result<Vec<Value>, String> {
     let db = cfg.sql_for(Some(zone));
+    // Intentar con la vista/tabla configurada (p.ej. PackoutResViewIMX).
     let sql = format!(
         "SELECT TOP {} * FROM {} WHERE Resultado = 'APROBADO' ORDER BY FechaHora DESC",
         top, zone.tables.recientes
     );
-    open(db, &sql)
+    match open(db, &sql) {
+        Ok(rows) => Ok(rows),
+        Err(e) if e.to_lowercase().contains("invalid object name") => {
+            // La vista/tabla de recientes no existe en esta BD: caer a la
+            // tabla de resultados con el mismo filtro (equivalente).
+            let sql2 = format!(
+                "SELECT TOP {} * FROM {} WHERE Resultado = 'APROBADO' ORDER BY FechaHora DESC",
+                top, zone.tables.resultados
+            );
+            open(db, &sql2)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn consultar_admin(cfg: &AppConfig, zone: &Zone, no: &str) -> Result<Vec<Value>, String> {
