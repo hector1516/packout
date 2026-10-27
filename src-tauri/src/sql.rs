@@ -591,26 +591,42 @@ pub fn create_table(db: &SqlDb, table: &str, columns: &[(String, String)]) -> Re
 }
 
 pub fn create_view(db: &SqlDb, source: &str) -> Result<(), String> {
-    // 1) CREATE OR ALTER (SQL Server 2016+): crea o altera en un solo paso.
-    match exec(db, source) {
-        Ok(()) => return Ok(()),
-        Err(e1) => {
-            // 2) Servidores antiguos: intentar CREATE VIEW.
-            let create_src = source.replacen("CREATE OR ALTER VIEW", "CREATE VIEW", 1);
-            if create_src != source {
-                if exec(db, &create_src).is_ok() {
+    // Extraer el nombre de la vista del source: "CREATE OR ALTER VIEW <name> AS ..."
+    let view_name = source
+        .split_whitespace()
+        .nth(4) // CREATE(0) OR(1) ALTER(2) VIEW(3) <name>(4)
+        .unwrap_or("")
+        .to_string();
+    // Si el servidor no soporta CREATE OR ALTER (SQL Server < 2016), usar
+    // CREATE VIEW / ALTER VIEW segun existencia.
+    let exists = if !view_name.is_empty() {
+        view_exists(db, &view_name).unwrap_or(false)
+    } else {
+        false
+    };
+    if exists {
+        let alter_src = source.replacen("CREATE OR ALTER VIEW", "ALTER VIEW", 1);
+        match exec(db, &alter_src) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // Si ALTER falla, intentar CREATE OR ALTER por si acaso.
+                if exec(db, source).is_ok() {
                     return Ok(());
                 }
+                return Err(e);
             }
-            // 3) Si ya existia, intentar ALTER VIEW.
-            let alter_src = source.replacen("CREATE OR ALTER VIEW", "ALTER VIEW", 1);
-            if alter_src != source {
-                if exec(db, &alter_src).is_ok() {
+        }
+    } else {
+        let create_src = source.replacen("CREATE OR ALTER VIEW", "CREATE VIEW", 1);
+        match exec(db, &create_src) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // Intentar CREATE OR ALTER por si el servidor lo soporta.
+                if exec(db, source).is_ok() {
                     return Ok(());
                 }
+                return Err(e);
             }
-            // 4) Ultimo recurso: devolver el error original para diagnostico.
-            Err(e1)
         }
     }
 }
